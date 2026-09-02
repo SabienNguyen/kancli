@@ -203,7 +203,7 @@ func (s *Store) Load() (*board.File, error) {
 		return nil, err
 	}
 	if err := f.Replay(events); err != nil {
-		return nil, fmt.Errorf("replay %s: %w", s.logPath, err)
+		return nil, replayError(s.logPath, err)
 	}
 	s.logSize = size
 	s.tailCount = len(events)
@@ -363,10 +363,20 @@ func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
 		}
 	}
 	if err := base.Replay(upTo); err != nil {
-		return nil, err
+		return nil, replayError(s.logPath, err)
 	}
 	base.Freeze()
 	return base, nil
+}
+
+// replayError words a replay failure. Data from a newer build gets advice
+// instead of a bare parse error.
+func replayError(path string, err error) error {
+	if errors.Is(err, board.ErrNewerEvents) {
+		return fmt.Errorf("%s was %w; upgrade kancli to the version that wrote it (or newer) and try again: %v",
+			path, board.ErrNewerEvents, err)
+	}
+	return fmt.Errorf("replay %s: %w", path, err)
 }
 
 // --- events ------------------------------------------------------------------
@@ -553,6 +563,9 @@ func (s *Store) append(events []board.Event) error {
 	for i := range events {
 		events[i].Seq = s.nextSeq
 		s.nextSeq++
+		if events[i].V == 0 {
+			events[i].V = board.EventVersion
+		}
 		line, err := json.Marshal(events[i])
 		if err != nil {
 			fh.Close()

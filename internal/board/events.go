@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -37,9 +38,20 @@ const (
 	EvLinkRemoved       EventKind = "link.removed"
 )
 
+// EventVersion is written into every event as "v". Bump it when the
+// meaning of an existing kind or its data payload changes; a build
+// refuses to replay events with a higher version than it knows. Events
+// without "v" (written before this field existed) are version 1.
+const EventVersion = 1
+
+// ErrNewerEvents wraps every replay failure caused by data this build
+// does not understand, so callers can word the advice.
+var ErrNewerEvents = errors.New("written by a newer kancli")
+
 // Event is one line of the append-only log. State is derived by replaying
 // events on top of a snapshot, and analytics read the same lines.
 type Event struct {
+	V     int             `json:"v,omitempty"`
 	Seq   int64           `json:"seq"`
 	At    time.Time       `json:"at"`
 	Board string          `json:"board,omitempty"`
@@ -180,6 +192,9 @@ func (f *File) Pending() []Event {
 // and uses the event's timestamp as "now" so the result matches the
 // original mutation exactly.
 func (f *File) Apply(e Event) error {
+	if e.V > EventVersion {
+		return fmt.Errorf("%w: event %d (%s) is format v%d, this build reads v%d", ErrNewerEvents, e.Seq, e.Kind, e.V, EventVersion)
+	}
 	f.Attach()
 	rec := f.rec
 	rec.muted = true
@@ -297,7 +312,7 @@ func (f *File) Apply(e Event) error {
 		*b = nb
 		b.clock = func() time.Time { return at }
 	default:
-		return fmt.Errorf("unknown event kind %q", e.Kind)
+		return fmt.Errorf("%w: unknown event kind %q at seq %d", ErrNewerEvents, e.Kind, e.Seq)
 	}
 	return nil
 }

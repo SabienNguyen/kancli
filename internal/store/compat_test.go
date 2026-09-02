@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -164,6 +165,39 @@ func TestLoadBacksUpEventLogToo(t *testing.T) {
 	for _, name := range []string{"board.json", "board.events.jsonl"} {
 		if _, err := os.Stat(filepath.Join(up.Backup, name)); err != nil {
 			t.Errorf("%s not backed up: %v", name, err)
+		}
+	}
+}
+
+func TestStoreWritesEventVersionAndRefusesNewer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "board.json")
+	st := New(path)
+	f, _ := st.Load()
+	f.Active().AddTask(board.Task{Title: "x"}) //nolint:errcheck // test data
+	if err := st.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Active().AddTask(board.Task{Title: "y"}) //nolint:errcheck // test data
+	if err := st.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	log, _ := os.ReadFile(st.LogPath())
+	if !strings.Contains(string(log), `"v":1`) {
+		t.Fatalf("events are not version-tagged:\n%s", log)
+	}
+
+	// A future kancli appends something this build cannot read.
+	fh, _ := os.OpenFile(st.LogPath(), os.O_APPEND|os.O_WRONLY, 0o644)
+	fh.WriteString(`{"v":1,"seq":99,"at":"2030-01-01T00:00:00Z","board":"main","kind":"task.teleported","task":1}` + "\n") //nolint:errcheck // test data
+	fh.Close()
+	_, err := New(path).Load()
+	if !errors.Is(err, board.ErrNewerEvents) {
+		t.Fatalf("err = %v, want ErrNewerEvents", err)
+	}
+	for _, want := range []string{"task.teleported", "upgrade kancli", st.LogPath()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q: %v", want, err)
 		}
 	}
 }

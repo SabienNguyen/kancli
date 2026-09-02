@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -735,5 +736,33 @@ func TestDecodeVersionReportsSource(t *testing.T) {
 	}
 	if _, _, err := DecodeVersion([]byte(`{"version":99,"boards":[]}`)); err == nil {
 		t.Fatal("newer file must be refused")
+	}
+}
+
+func TestReplayRefusesNewerEvents(t *testing.T) {
+	f := NewFile()
+	b := f.Boards[0]
+	unknown := Event{Seq: 1, Board: b.ID, Kind: "task.teleported", Task: 1}
+	err := f.Replay([]Event{unknown})
+	if !errors.Is(err, ErrNewerEvents) {
+		t.Fatalf("unknown kind: err = %v, want ErrNewerEvents", err)
+	}
+	if !strings.Contains(err.Error(), "task.teleported") {
+		t.Errorf("message should name the kind: %v", err)
+	}
+	future := Event{Seq: 1, Board: b.ID, Kind: EvTaskDeleted, Task: 1, V: EventVersion + 1}
+	err = f.Replay([]Event{future})
+	if !errors.Is(err, ErrNewerEvents) {
+		t.Fatalf("newer v: err = %v, want ErrNewerEvents", err)
+	}
+	// The version tag never changes what a known event does.
+	tk, _ := b.AddTask(Task{Title: "x"})
+	f.Pending() // drain
+	current := Event{Seq: 5, Board: b.ID, Kind: EvTaskDeleted, Task: tk.ID, V: EventVersion}
+	if err := f.Replay([]Event{current}); err != nil {
+		t.Fatal(err)
+	}
+	if b.Task(tk.ID) != nil {
+		t.Error("v-tagged delete was not applied")
 	}
 }
