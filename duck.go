@@ -7,8 +7,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// doneColumns maps every board to its last column.
+func doneColumns(f *File) map[string]string {
+	out := map[string]string{}
+	for _, b := range f.Boards {
+		if c := b.DoneColumn(); c != nil {
+			out[b.ID] = c.ID
+		}
+	}
+	return out
+}
 
 // duckdbBinary finds the DuckDB command-line shell, if installed.
 func duckdbBinary() (string, error) {
@@ -39,11 +51,25 @@ func (s *store) eventFiles() []string {
 	return segs
 }
 
-// sqlViews returns SQL that defines the boards, columns, tasks and events
-// views over the given state file and event log files.
-func sqlViews(stateFile string, eventFiles []string) string {
+// sqlViews returns SQL that defines the boards, columns, tasks, events and
+// derived views over the given state file and event log files. doneColumns
+// maps each board id to its last column, which defines "finished".
+func sqlViews(stateFile string, eventFiles []string, doneColumns map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("-- kancli views. Load with: duckdb -init kancli.sql\n")
+	ids := make([]string, 0, len(doneColumns))
+	for id := range doneColumns {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rows := make([]string, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, fmt.Sprintf("(%s, %s)", sqlLiteral(id), sqlLiteral(doneColumns[id])))
+	}
+	if len(rows) == 0 {
+		rows = append(rows, "(NULL::VARCHAR, NULL::VARCHAR)")
+	}
+	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW done_columns AS SELECT * FROM (VALUES %s) t(board, id)%s;\n", strings.Join(rows, ", "), map[bool]string{true: " WHERE board IS NOT NULL", false: ""}[len(doneColumns) == 0])
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW boards AS SELECT b.id, b.name, len(b.tasks) AS tasks FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", sqlLiteral(stateFile))
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW columns AS SELECT b.id AS board, unnest(b.columns, recursive := true) FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", sqlLiteral(stateFile))
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW tasks AS SELECT b.id AS board, unnest(b.tasks, recursive := true) FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", sqlLiteral(stateFile))
@@ -63,10 +89,12 @@ CREATE OR REPLACE VIEW column_stays AS
          lead(at) OVER (PARTITION BY board, task ORDER BY seq) AS left
   FROM moves;
 CREATE OR REPLACE VIEW cycle_times AS
-  SELECT c.board, c.task, c.at AS created_at, d.at AS done_at, d.at - c.at AS cycle
-  FROM events c JOIN moves d USING (board, task)
+  SELECT c.board, c.task, c.at AS created_at, min(d.at) AS done_at, min(d.at) - c.at AS cycle
+  FROM events c
+  JOIN moves d USING (board, task)
+  JOIN done_columns dc ON dc.board = c.board AND dc.id = d.to_column
   WHERE c.kind = 'task.created'
-    AND d.to_column = (SELECT id FROM columns WHERE columns.board = c.board ORDER BY rowid DESC LIMIT 1);
+  GROUP BY ALL;
 `)
 	return sb.String()
 }
@@ -78,7 +106,9 @@ FROM moves WHERE to_column = 'done' GROUP BY ALL ORDER BY week;
 
 -- Median cycle time per label
 SELECT label, median(cycle) AS cycle
-FROM cycle_times JOIN tasks USING (board, task) , unnest(tasks.labels) AS l(label)
+FROM cycle_times ct
+JOIN tasks t ON t.board = ct.board AND t.id = ct.task,
+     unnest(t.labels) AS l(label)
 GROUP BY ALL ORDER BY cycle DESC;
 
 -- Average hours spent in each column

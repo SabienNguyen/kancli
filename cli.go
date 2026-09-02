@@ -70,6 +70,9 @@ func (c *cli) run(cmd string, args []string) int {
 		return 2
 	}
 	if err != nil {
+		if errors.Is(err, errSilentExit) {
+			return 1
+		}
 		fmt.Fprintf(c.stderr, "kancli %s: %v\n", cmd, err)
 		if errors.Is(err, errUsage) {
 			return 2
@@ -80,6 +83,9 @@ func (c *cli) run(cmd string, args []string) int {
 }
 
 var errUsage = errors.New("usage error")
+
+// errSilentExit makes a command exit 1 without printing anything.
+var errSilentExit = errors.New("silent exit")
 
 func usageErr(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, args...))
@@ -126,7 +132,7 @@ func (c *cli) stats(args []string) error {
 			return err
 		}
 		defer cleanup()
-		views := sqlViews(state, c.env.store.eventFiles())
+		views := sqlViews(state, c.env.store.eventFiles(), doneColumns(c.env.file))
 		if showSQL {
 			fmt.Fprint(c.stdout, views)
 			fmt.Fprint(c.stdout, "\n"+exampleQueries)
@@ -285,7 +291,17 @@ func (c *cli) compact(args []string) error {
 		return fmt.Errorf("nothing to compact in demo mode")
 	}
 	n := c.env.store.tailEvents()
-	if err := c.env.store.compact(c.env.file); err != nil {
+	if err := c.env.store.compact(c.env.file); errors.Is(err, errStale) {
+		f, err := c.env.store.load()
+		if err != nil {
+			return err
+		}
+		c.env.file = f
+		n = c.env.store.tailEvents()
+		if err := c.env.store.compact(f); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
 	}
 	fmt.Fprintf(c.stdout, "Snapshot written to %s (%d event%s archived)\n", c.env.store.path, n, plural(n))
@@ -753,7 +769,7 @@ func (c *cli) due(args []string) error {
 		}
 	}
 	if quiet {
-		return fmt.Errorf("%s", summarizeDue(overdue, todayN, soon))
+		return errSilentExit
 	}
 	return nil
 }
@@ -820,7 +836,7 @@ func (c *cli) export(args []string) error {
 			return err
 		}
 		defer cleanup()
-		views := sqlViews(state, c.env.store.eventFiles())
+		views := sqlViews(state, c.env.store.eventFiles(), doneColumns(c.env.file))
 		source := fmt.Sprintf("SELECT * FROM tasks WHERE board = %s", sqlLiteral(b.ID))
 		if events {
 			source = fmt.Sprintf("SELECT * FROM events WHERE board = %s OR board IS NULL", sqlLiteral(b.ID))

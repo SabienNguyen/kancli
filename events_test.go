@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -366,15 +367,18 @@ func TestRelevanceAndSimilarity(t *testing.T) {
 }
 
 func TestSQLViews(t *testing.T) {
-	sql := sqlViews("/tmp/state.json", []string{"/data/board.events/000000000001-000000000010.jsonl", "/data/board.events.jsonl"})
-	for _, want := range []string{"CREATE OR REPLACE VIEW tasks", "read_json_auto('/tmp/state.json')", "'/data/board.events.jsonl'", "format = 'newline_delimited'", "VIEW cycle_times", "VIEW column_stays"} {
+	sql := sqlViews("/tmp/state.json", []string{"/data/board.events/000000000001-000000000010.jsonl", "/data/board.events.jsonl"}, map[string]string{"main": "done", "work": "shipped"})
+	for _, want := range []string{"CREATE OR REPLACE VIEW tasks", "read_json_auto('/tmp/state.json')", "'/data/board.events.jsonl'", "format = 'newline_delimited'", "VIEW cycle_times", "VIEW column_stays", "('main', 'done'), ('work', 'shipped')", "JOIN done_columns dc"} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("views missing %q", want)
 		}
 	}
-	empty := sqlViews("/tmp/s.json", nil)
-	if !strings.Contains(empty, "WHERE false") {
-		t.Error("empty event view should still exist")
+	empty := sqlViews("/tmp/s.json", nil, nil)
+	if !strings.Contains(empty, "WHERE false") || !strings.Contains(empty, "WHERE board IS NOT NULL") {
+		t.Error("empty views should still be defined")
+	}
+	if strings.Contains(sql, "rowid") {
+		t.Error("views must not rely on rowid")
 	}
 	if sqlLiteral("it's") != "'it''s'" {
 		t.Error("sqlLiteral")
@@ -480,5 +484,116 @@ func TestTaskIndexStaysCorrect(t *testing.T) {
 	b.Tasks = b.Tasks[1:]
 	if b.Task(b.Tasks[0].ID) == nil || b.taskIndex(b.Tasks[0].ID) != 0 {
 		t.Error("index should self-heal after a direct removal")
+	}
+}
+
+func TestTornTailIsRepairedBeforeAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	st := newStore(path)
+	f, _ := st.load()
+	f.Active().AddTask(Task{Title: "one"}) //nolint:errcheck // test data
+	st.save(f)                             //nolint:errcheck // test data
+	f.Active().AddTask(Task{Title: "two"}) //nolint:errcheck // test data
+	st.save(f)                             //nolint:errcheck // test data
+	// Crash mid-write.
+	fh, _ := os.OpenFile(st.logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	fh.WriteString(`{"seq":9,"kind":"task.cre`) //nolint:errcheck // test data
+	fh.Close()
+
+	st2 := newStore(path)
+	f2, err := st2.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f2.Active().AddTask(Task{Title: "three"}) //nolint:errcheck // test data
+	if err := st2.save(f2); err != nil {
+		t.Fatal(err)
+	}
+	f2.Active().AddTask(Task{Title: "four"}) //nolint:errcheck // test data
+	if err := st2.save(f2); err != nil {
+		t.Fatal(err)
+	}
+	f3, err := newStore(path).load()
+	if err != nil {
+		t.Fatalf("log unreadable after appending past a torn line: %v", err)
+	}
+	if got := len(f3.Active().Tasks); got != 4 {
+		t.Errorf("tasks after torn-tail repair = %d, want 4", got)
+	}
+}
+
+func TestCompactRefusesToDropForeignEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	a := newStore(path)
+	fa, _ := a.load()
+	fa.Active().AddTask(Task{Title: "from a"}) //nolint:errcheck // test data
+	a.save(fa)                                 //nolint:errcheck // test data
+
+	b := newStore(path)
+	fb, _ := b.load()
+	fb.Active().AddTask(Task{Title: "from b"}) //nolint:errcheck // test data
+	b.save(fb)                                 //nolint:errcheck // test data
+
+	// A has not seen b's event; compacting must not fold it away.
+	if err := a.compact(fa); !errors.Is(err, errStale) {
+		t.Fatalf("compact with foreign events = %v, want errStale", err)
+	}
+	fa, _ = a.load()
+	if err := a.compact(fa); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := newStore(path).load()
+	if len(f.Active().Tasks) != 2 {
+		t.Errorf("tasks after compact = %d, want 2", len(f.Active().Tasks))
+	}
+
+	// B, still holding the old sequence numbers, appends after A's compaction:
+	// its event must get a fresh number and survive a reload.
+	fb.Active().AddComment(1, "late comment") //nolint:errcheck // test data
+	if err := b.save(fb); err != nil {
+		t.Fatal(err)
+	}
+	f, err := newStore(path).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.Active().Task(1).Comments); got != 1 {
+		t.Errorf("comment appended after a foreign compaction was lost (%d comments)", got)
+	}
+}
+
+func TestBootstrapDoesNotArchiveFromCreation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	old := `{"version":2,"boards":[{"id":"main","name":"Main","tasks":[
+		{"id":1,"column":"done","title":"old","created_at":"2026-07-01T09:00:00Z","updated_at":"2026-07-05T09:00:00Z","archived_at":"2026-07-10T09:00:00Z"}]}]}`
+	os.WriteFile(path, []byte(old), 0o644) //nolint:errcheck // test data
+	st := newStore(path)
+	if _, err := st.load(); err != nil {
+		t.Fatal(err)
+	}
+	early, err := st.loadAsOf(time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk := early.Active().Task(1); tk == nil || tk.Archived() || tk.Column != "todo" {
+		t.Errorf("as-of before archive: %+v", tk)
+	}
+	late, _ := st.loadAsOf(time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC))
+	if tk := late.Active().Task(1); tk == nil || !tk.Archived() {
+		t.Errorf("as-of after archive: %+v", tk)
+	}
+}
+
+func TestWeeklyThroughputIgnoresTimeZone(t *testing.T) {
+	b := newTestBoard()
+	at := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC) // a Wednesday
+	events := []Event{
+		{Seq: 1, At: at, Board: b.ID, Kind: evTaskCreated, Task: 1, To: "todo", Data: mustJSON(Task{ID: 1, Title: "x", Column: "todo"})},
+		{Seq: 2, At: at.Add(time.Hour), Board: b.ID, Kind: evTaskMoved, Task: 1, From: "todo", To: "done"},
+	}
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.Local)
+	st := computeStats(b, events, now, 7)
+	if len(st.Weeks) != 1 || st.Weeks[0].Done != 1 || st.Weeks[0].Created != 1 {
+		t.Errorf("weeks = %+v", st.Weeks)
 	}
 }

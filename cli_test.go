@@ -83,8 +83,8 @@ func TestCLIDue(t *testing.T) {
 	if !strings.Contains(out, "Soon") {
 		t.Errorf("due -days:\n%s", out)
 	}
-	if _, errs, code := runCLI(t, path, "due", "-q"); code != 1 || !strings.Contains(errs, "1 overdue, 1 due today") {
-		t.Errorf("due -q: %d %q", code, errs)
+	if out, errs, code := runCLI(t, path, "due", "-q"); code != 1 || out != "" || errs != "" {
+		t.Errorf("due -q should be silent with exit 1: %d %q %q", code, out, errs)
 	}
 	runCLI(t, path, "done", "1", "2")
 	if out, _, code := runCLI(t, path, "due"); code != 0 || !strings.Contains(out, "Nothing due") {

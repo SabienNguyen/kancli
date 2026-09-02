@@ -20,6 +20,27 @@ import (
 // the store folds them into a fresh snapshot.
 const compactAfter = 500
 
+// errStale is returned by compact when another process changed the log or
+// snapshot since this store last read them. Callers reload and retry.
+var errStale = errors.New("the board changed on disk; reload before writing a snapshot")
+
+// snapshotSeq reads only the last_seq of a snapshot file.
+func snapshotSeq(path string) (int64, time.Time) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, time.Time{}
+	}
+	var probe struct {
+		LastSeq int64 `json:"last_seq"`
+	}
+	_ = json.Unmarshal(data, &probe)
+	mod := time.Time{}
+	if info, err := os.Stat(path); err == nil {
+		mod = info.ModTime()
+	}
+	return probe.LastSeq, mod
+}
+
 // maxEventLine bounds one event line; undo events carry a whole board.
 const maxEventLine = 32 << 20
 
@@ -233,6 +254,8 @@ func (s *store) bootstrap(f *File) error {
 			created := t
 			created.Column = first
 			created.History = nil
+			created.ArchivedAt = nil
+			created.UpdatedAt = t.CreatedAt
 			if created.Column == "" {
 				created.Column = t.Column
 			}
@@ -384,7 +407,16 @@ func (s *store) events() ([]Event, error) {
 		return nil, err
 	}
 	all = append(all, tail...)
-	sort.SliceStable(all, func(i, j int) bool { return all[i].Seq < all[j].Seq })
+	ordered := true
+	for i := 1; i < len(all); i++ {
+		if all[i].Seq < all[i-1].Seq {
+			ordered = false
+			break
+		}
+	}
+	if !ordered {
+		sort.SliceStable(all, func(i, j int) bool { return all[i].Seq < all[j].Seq })
+	}
 	return all, nil
 }
 
@@ -426,21 +458,39 @@ func (s *store) append(events []Event) error {
 	}
 	defer unlock()
 
-	// Another process may have appended since we last read the log.
-	if info, err := os.Stat(s.logPath); err == nil && info.Size() != s.logSize {
+	// Another process may have appended, or compacted the log away, since
+	// we last read it. Re-derive the next sequence number from whatever is
+	// on disk so ours can never collide with or fall behind a snapshot.
+	if info, err := os.Stat(s.logPath); err == nil {
+		if info.Size() != s.logSize {
+			s.needReload = true
+			all, consumed, err := readEventFile(s.logPath)
+			if err != nil {
+				return err
+			}
+			if last := lastSeq(all); last >= s.nextSeq {
+				s.nextSeq = last + 1
+			}
+			// A torn last line (from a crash) is garbage; cut it off so the
+			// next event starts on a clean line.
+			if consumed < info.Size() {
+				if err := os.Truncate(s.logPath, consumed); err != nil {
+					return fmt.Errorf("repair %s: %w", s.logPath, err)
+				}
+			}
+			s.logSize = consumed
+			s.tailCount = len(all)
+		}
+	} else if s.logSize != 0 {
+		// The tail we knew about was compacted by someone else.
 		s.needReload = true
-		all, size, err := readEventFile(s.logPath)
-		if err != nil {
-			return err
-		}
-		if last := lastSeq(all); last >= s.nextSeq {
-			s.nextSeq = last + 1
-		}
-		s.logSize = size
-		s.tailCount = len(all)
+		s.logSize, s.tailCount = 0, 0
 	}
-	if info, err := os.Stat(s.path); err == nil && !info.ModTime().Equal(s.snapMod) && !s.snapMod.IsZero() {
+	if seq, mod := snapshotSeq(s.path); !mod.IsZero() && !mod.Equal(s.snapMod) {
 		s.needReload = true
+		if seq >= s.nextSeq {
+			s.nextSeq = seq + 1
+		}
 	}
 
 	fh, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -510,6 +560,25 @@ func (s *store) compact(f *File) error {
 		return err
 	}
 	defer unlock()
+
+	// Never fold events this process has not replayed: if the log or the
+	// snapshot moved under us, the caller must reload first.
+	if s.needReload {
+		return errStale
+	}
+	if info, err := os.Stat(s.logPath); err == nil {
+		if info.Size() != s.logSize {
+			s.needReload = true
+			return errStale
+		}
+	} else if s.logSize != 0 {
+		s.needReload = true
+		return errStale
+	}
+	if _, mod := snapshotSeq(s.path); !mod.IsZero() && !s.snapMod.IsZero() && !mod.Equal(s.snapMod) {
+		s.needReload = true
+		return errStale
+	}
 
 	// The very first snapshot is preceded by an empty base so that "as of"
 	// views can replay the whole history from the beginning.

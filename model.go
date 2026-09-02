@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -552,11 +553,24 @@ func (m app) quit() (tea.Model, tea.Cmd) {
 	m.quitting = true
 	if !m.readOnly && m.store.enabled() && m.store.tailEvents() > 0 {
 		// Fold the tail into a fresh snapshot so board.json is current.
-		if err := m.store.compact(m.file); err != nil {
+		if _, err := m.writeSnapshot(); err != nil {
 			m.err = err
 		}
 	}
 	return m, tea.Quit
+}
+
+// writeSnapshot compacts the log, first merging anything another process
+// wrote. It reports whether a merge happened.
+func (m *app) writeSnapshot() (bool, error) {
+	err := m.store.compact(m.file)
+	if !errors.Is(err, errStale) {
+		return false, err
+	}
+	if err := m.reload(); err != nil {
+		return false, err
+	}
+	return true, m.store.compact(m.file)
 }
 
 func (m app) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -784,9 +798,13 @@ func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.readOnly {
 			return m, m.setStatus("Read-only view")
 		}
-		if err := m.store.compact(m.file); err != nil {
+		merged, err := m.writeSnapshot()
+		if err != nil {
 			m.err = err
 			return m, nil
+		}
+		if merged {
+			return m, tea.Batch(m.refresh(), m.setStatus("Merged changes from another kancli and wrote a snapshot"))
 		}
 		return m, m.setStatus("Snapshot written to %s", m.store.describe())
 

@@ -270,9 +270,7 @@ func (f *File) replay(events []Event) error {
 func (e Event) describe(f *File) string {
 	name := func(id string) string {
 		if b := f.Board(e.Board); b != nil {
-			if c := b.Column(id); c != nil {
-				return c.Name
-			}
+			return colName(b, id)
 		}
 		return id
 	}

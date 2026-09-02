@@ -108,11 +108,11 @@ type statsWalker struct {
 	stays    map[string][]time.Duration
 	wip      []wipDelta
 	finished []finishedTask
-	weeks    map[time.Time]*weekCount
+	weeks    map[int64]*weekCount // keyed by the week's Unix time
 }
 
 func newStatsWalker(b *Board) *statsWalker {
-	w := &statsWalker{board: b.ID, tracks: map[int]*taskTrack{}, stays: map[string][]time.Duration{}, weeks: map[time.Time]*weekCount{}}
+	w := &statsWalker{board: b.ID, tracks: map[int]*taskTrack{}, stays: map[string][]time.Duration{}, weeks: map[int64]*weekCount{}}
 	if len(b.Columns) > 0 {
 		w.first = b.Columns[0].ID
 		w.done = b.DoneColumn().ID
@@ -133,19 +133,23 @@ func (w *statsWalker) compatible(b *Board) bool {
 
 func (w *statsWalker) isWIP(col string) bool { return col != "" && col != w.first && col != w.done }
 
+// weekOf returns the Monday starting the local week containing t. Times
+// are normalised to the local zone so events written on another machine
+// (or read back as UTC) land in the same buckets as "now".
 func weekOf(t time.Time) time.Time {
+	t = t.In(time.Local)
 	y, m, d := t.Date()
-	day := time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+	day := time.Date(y, m, d, 0, 0, 0, 0, time.Local)
 	offset := (int(day.Weekday()) + 6) % 7 // Monday = 0
 	return day.AddDate(0, 0, -offset)
 }
 
 func (w *statsWalker) bump(t time.Time, created, doneN int) {
 	wk := weekOf(t)
-	wc := w.weeks[wk]
+	wc := w.weeks[wk.Unix()]
 	if wc == nil {
 		wc = &weekCount{Week: wk}
-		w.weeks[wk] = wc
+		w.weeks[wk.Unix()] = wc
 	}
 	wc.Created += created
 	wc.Done += doneN
@@ -279,12 +283,6 @@ func (w *statsWalker) finish(b *Board, now time.Time, days int) boardStats {
 	}
 	st := boardStats{Board: b.ID, Generated: now, Days: days, Events: w.events}
 	done := w.done
-	colName := func(id string) string {
-		if c := b.Column(id); c != nil {
-			return c.Name
-		}
-		return id
-	}
 
 	// Headline counts from the live board.
 	for _, t := range b.Live() {
@@ -329,7 +327,7 @@ func (w *statsWalker) finish(b *Board, now time.Time, days int) boardStats {
 	for i := 0; i < nWeeks; i++ {
 		wk := start.AddDate(0, 0, 7*i)
 		wc := weekCount{Week: wk}
-		if got := w.weeks[wk]; got != nil {
+		if got := w.weeks[wk.Unix()]; got != nil {
 			wc = *got
 		}
 		st.Weeks = append(st.Weeks, wc)
@@ -365,7 +363,7 @@ func (w *statsWalker) finish(b *Board, now time.Time, days int) boardStats {
 		if tr := w.tracks[t.ID]; tr != nil && !tr.since.IsZero() {
 			since = tr.since
 		}
-		st.Aging = append(st.Aging, agingTask{ID: t.ID, Title: t.Title, Column: colName(t.Column), Since: since, Age: now.Sub(since)})
+		st.Aging = append(st.Aging, agingTask{ID: t.ID, Title: t.Title, Column: colName(b, t.Column), Since: since, Age: now.Sub(since)})
 	}
 	sort.Slice(st.Aging, func(i, j int) bool { return st.Aging[i].Age > st.Aging[j].Age })
 	if len(st.Aging) > 10 {

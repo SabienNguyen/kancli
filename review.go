@@ -21,12 +21,6 @@ func reviewReport(b *Board, events []Event, now time.Time, days int) string {
 		done = b.DoneColumn().ID
 		first = b.Columns[0].ID
 	}
-	colName := func(id string) string {
-		if c := b.Column(id); c != nil {
-			return c.Name
-		}
-		return id
-	}
 	title := func(id int) string {
 		if t := b.Task(id); t != nil {
 			return t.Title
@@ -49,7 +43,7 @@ func reviewReport(b *Board, events []Event, now time.Time, days int) string {
 		case evTaskMoved:
 			if e.From == first && e.To != done && !seenStarted[e.Task] {
 				seenStarted[e.Task] = true
-				started = append(started, fmt.Sprintf("- #%d %s → %s", e.Task, title(e.Task), colName(e.To)))
+				started = append(started, fmt.Sprintf("- #%d %s → %s", e.Task, title(e.Task), colName(b, e.To)))
 			}
 		case evTaskArchived:
 			archived = append(archived, fmt.Sprintf("- #%d %s", e.Task, title(e.Task)))
