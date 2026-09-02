@@ -1,0 +1,2 @@
+{"seq":3,"at":"2026-08-03T09:00:00+10:00","board":"main","kind":"task.moved","task":2,"from":"todo","to":"in_progress","actor":"cli"}
+{"seq":4,"at":"2026-08-03T09:01:00+10:00","board":"main","kind":"comment.added","task":2,"text":"oat milk","actor":"cli"}

@@ -1,0 +1,2 @@
+{"seq":1,"at":"2026-08-01T12:00:00+10:00","board":"main","kind":"task.created","task":1,"to":"todo","data":{"id":1,"column":"todo","title":"write code","description":"see #2","priority":"high","labels":["dev"],"created_at":"2026-08-01T12:00:00+10:00","updated_at":"2026-08-01T12:00:00+10:00"},"actor":"ui"}
+{"seq":2,"at":"2026-08-01T12:05:00+10:00","board":"main","kind":"task.created","task":2,"to":"todo","data":{"id":2,"column":"todo","title":"buy milk","created_at":"2026-08-01T12:05:00+10:00","updated_at":"2026-08-01T12:05:00+10:00"},"actor":"ui"}

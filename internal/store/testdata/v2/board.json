@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "active_board": "main",
+  "boards": [
+    {
+      "id": "main",
+      "name": "Main",
+      "columns": [
+        {"id": "todo", "name": "To Do", "color": "62"},
+        {"id": "in_progress", "name": "In Progress", "color": "214"},
+        {"id": "done", "name": "Done", "color": "35"}
+      ],
+      "tasks": [
+        {
+          "id": 1,
+          "column": "in_progress",
+          "title": "write code",
+          "description": "see #2",
+          "priority": "high",
+          "labels": ["dev"],
+          "links": [{"kind": "relates", "task": 2}],
+          "created_at": "2026-08-01T12:00:00+10:00",
+          "updated_at": "2026-08-02T12:00:00+10:00"
+        },
+        {
+          "id": 2,
+          "column": "todo",
+          "title": "buy milk",
+          "created_at": "2026-08-01T12:05:00+10:00",
+          "updated_at": "2026-08-01T12:05:00+10:00"
+        }
+      ],
+      "next_id": 3
+    }
+  ],
+  "last_seq": 2,
+  "snapshot_at": "2026-08-02T12:00:00+10:00"
+}
