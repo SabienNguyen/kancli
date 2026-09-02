@@ -1,0 +1,79 @@
+# GoReleaser configuration. Tag a commit (git tag v1.0.0 && git push --tags)
+# and the release workflow builds binaries for every platform, uploads them
+# to the GitHub release with checksums and writes the changelog from commits.
+version: 2
+
+project_name: kancli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kancli
+    main: .
+    binary: kancli
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows, freebsd]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
+
+# Homebrew: create a tap repository (for example SabienNguyen/homebrew-tap)
+# and a HOMEBREW_TAP_TOKEN secret with write access to it, then uncomment.
+#
+# brews:
+#   - name: kancli
+#     repository:
+#       owner: SabienNguyen
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+#     homepage: https://github.com/SabienNguyen/kancli
+#     description: A kanban board for your terminal
+#     license: MIT
+#     install: |
+#       bin.install "kancli"
+#     test: |
+#       system "#{bin}/kancli", "-version"

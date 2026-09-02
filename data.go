@@ -1,12 +1,802 @@
 package main
 
-// sampleTasks returns the tasks used in demo mode.
-func sampleTasks() []Task {
-	return []Task{
-		newTask(todo, "buy milk", "strawberry milk"),
-		newTask(todo, "eat sushi", "negitoro roll, miso soup, rice"),
-		newTask(todo, "fold laundry", "or wear wrinkly t-shirts"),
-		newTask(inProgress, "write code", "don't worry, it's Go"),
-		newTask(done, "stay cool", "as a cucumber"),
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+	"unicode"
+)
+
+// fileVersion is bumped whenever the on-disk format changes incompatibly.
+const fileVersion = 2
+
+// File is the whole data file: every board plus which one is active.
+type File struct {
+	Version     int      `json:"version"`
+	ActiveBoard string   `json:"active_board"`
+	Boards      []*Board `json:"boards"`
+}
+
+// Board is one kanban board with its columns and tasks.
+type Board struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Columns []Column `json:"columns"`
+	Tasks   []Task   `json:"tasks"`
+	NextID  int      `json:"next_id"`
+}
+
+// Column is one lane on a board. The last column is treated as "done".
+type Column struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Color    string `json:"color,omitempty"`
+	WIPLimit int    `json:"wip_limit,omitempty"`
+}
+
+// Priority orders tasks from none (0) to urgent.
+type Priority int
+
+const (
+	priorityNone Priority = iota
+	priorityLow
+	priorityMedium
+	priorityHigh
+	priorityUrgent
+	numPriorities
+)
+
+var priorityNames = [numPriorities]string{"none", "low", "medium", "high", "urgent"}
+
+func (p Priority) String() string {
+	if p < 0 || p >= numPriorities {
+		return "none"
 	}
+	return priorityNames[p]
+}
+
+func parsePriority(s string) (Priority, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for i, n := range priorityNames {
+		if n == s || (s != "" && strings.HasPrefix(n, s)) {
+			return Priority(i), nil
+		}
+	}
+	return priorityNone, fmt.Errorf("unknown priority %q (use none, low, medium, high or urgent)", s)
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (p Priority) MarshalText() ([]byte, error) { return []byte(p.String()), nil }
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (p *Priority) UnmarshalText(b []byte) error {
+	if len(strings.TrimSpace(string(b))) == 0 {
+		*p = priorityNone
+		return nil
+	}
+	v, err := parsePriority(string(b))
+	if err != nil {
+		return err
+	}
+	*p = v
+	return nil
+}
+
+// ChecklistItem is one line of a task's checklist.
+type ChecklistItem struct {
+	Text string `json:"text"`
+	Done bool   `json:"done"`
+}
+
+// Comment is a timestamped note on a task.
+type Comment struct {
+	At   time.Time `json:"at"`
+	Text string    `json:"text"`
+}
+
+// Event is one line of a task's activity history.
+type Event struct {
+	At   time.Time `json:"at"`
+	Text string    `json:"text"`
+}
+
+// Task is a single card.
+type Task struct {
+	ID          int             `json:"id"`
+	Column      string          `json:"column"`
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	Priority    Priority        `json:"priority,omitempty"`
+	Due         string          `json:"due,omitempty"` // YYYY-MM-DD
+	Labels      []string        `json:"labels,omitempty"`
+	Assignee    string          `json:"assignee,omitempty"`
+	Checklist   []ChecklistItem `json:"checklist,omitempty"`
+	Attachments []string        `json:"attachments,omitempty"`
+	Comments    []Comment       `json:"comments,omitempty"`
+	History     []Event         `json:"history,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	ArchivedAt  *time.Time      `json:"archived_at,omitempty"`
+}
+
+// Archived reports whether the task has been archived off the board.
+func (t Task) Archived() bool { return t.ArchivedAt != nil }
+
+// DueDate parses the task's due date, if it has one.
+func (t Task) DueDate() (time.Time, bool) {
+	if t.Due == "" {
+		return time.Time{}, false
+	}
+	d, err := time.ParseInLocation(dateLayout, t.Due, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return d, true
+}
+
+// ChecklistProgress returns done and total checklist counts.
+func (t Task) ChecklistProgress() (int, int) {
+	done := 0
+	for _, c := range t.Checklist {
+		if c.Done {
+			done++
+		}
+	}
+	return done, len(t.Checklist)
+}
+
+// Ref is the task's user-visible reference, e.g. "#12".
+func (t Task) Ref() string { return fmt.Sprintf("#%d", t.ID) }
+
+// FirstLine returns the first non-empty line of the description, with an
+// ellipsis when more follows.
+func (t Task) FirstLine() string {
+	first, rest, multi := strings.Cut(t.Description, "\n")
+	first = strings.TrimSpace(first)
+	if multi && strings.TrimSpace(rest) != "" {
+		return first + " …"
+	}
+	return first
+}
+
+func (t *Task) log(format string, args ...any) {
+	t.History = append(t.History, Event{At: time.Now(), Text: fmt.Sprintf(format, args...)})
+}
+
+// defaultColumns are used for new boards.
+func defaultColumns() []Column {
+	return []Column{
+		{ID: "todo", Name: "To Do", Color: "62"},
+		{ID: "in_progress", Name: "In Progress", Color: "214"},
+		{ID: "done", Name: "Done", Color: "35"},
+	}
+}
+
+// columnPalette is cycled through when new columns are created without a
+// colour.
+var columnPalette = []string{"62", "214", "35", "205", "39", "208", "99", "171", "43", "167"}
+
+// newFile creates a data file with one empty board.
+func newFile() *File {
+	b := newBoard("Main")
+	return &File{Version: fileVersion, ActiveBoard: b.ID, Boards: []*Board{b}}
+}
+
+func newBoard(name string) *Board {
+	return &Board{ID: slug(name), Name: name, Columns: defaultColumns(), NextID: 1}
+}
+
+// slug turns a name into a lowercase identifier.
+func slug(name string) string {
+	var b strings.Builder
+	lastDash := true
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			b.WriteByte('_')
+			lastDash = true
+		}
+	}
+	s := strings.Trim(b.String(), "_")
+	if s == "" {
+		s = "item"
+	}
+	return s
+}
+
+// uniqueID appends a counter to base until it is not in taken.
+func uniqueID(base string, taken func(string) bool) string {
+	id := base
+	for n := 2; taken(id); n++ {
+		id = fmt.Sprintf("%s_%d", base, n)
+	}
+	return id
+}
+
+// --- File -----------------------------------------------------------------
+
+// Active returns the active board, falling back to the first one.
+func (f *File) Active() *Board {
+	if b := f.Board(f.ActiveBoard); b != nil {
+		return b
+	}
+	if len(f.Boards) == 0 {
+		f.Boards = append(f.Boards, newBoard("Main"))
+	}
+	f.ActiveBoard = f.Boards[0].ID
+	return f.Boards[0]
+}
+
+// Board finds a board by ID or (case-insensitive) name.
+func (f *File) Board(key string) *Board {
+	for _, b := range f.Boards {
+		if b.ID == key {
+			return b
+		}
+	}
+	for _, b := range f.Boards {
+		if strings.EqualFold(b.Name, key) {
+			return b
+		}
+	}
+	return nil
+}
+
+// AddBoard creates a new empty board and returns it.
+func (f *File) AddBoard(name string) (*Board, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("board name is required")
+	}
+	if f.Board(name) != nil {
+		return nil, fmt.Errorf("a board named %q already exists", name)
+	}
+	b := newBoard(name)
+	b.ID = uniqueID(b.ID, func(id string) bool { return f.Board(id) != nil })
+	f.Boards = append(f.Boards, b)
+	return b, nil
+}
+
+// RemoveBoard deletes a board. The last board cannot be removed.
+func (f *File) RemoveBoard(id string) error {
+	if len(f.Boards) <= 1 {
+		return fmt.Errorf("cannot delete the only board")
+	}
+	for i, b := range f.Boards {
+		if b.ID == id {
+			f.Boards = append(f.Boards[:i], f.Boards[i+1:]...)
+			if f.ActiveBoard == id {
+				f.ActiveBoard = f.Boards[0].ID
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("no board %q", id)
+}
+
+// --- Board ----------------------------------------------------------------
+
+// Column finds a column by ID, or by case-insensitive name or prefix.
+func (b *Board) Column(key string) *Column {
+	for i := range b.Columns {
+		if b.Columns[i].ID == key {
+			return &b.Columns[i]
+		}
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return nil
+	}
+	for i := range b.Columns {
+		if strings.ToLower(b.Columns[i].Name) == key {
+			return &b.Columns[i]
+		}
+	}
+	var match *Column
+	for i := range b.Columns {
+		if strings.HasPrefix(strings.ToLower(b.Columns[i].Name), key) || strings.HasPrefix(b.Columns[i].ID, key) {
+			if match != nil {
+				return nil // ambiguous
+			}
+			match = &b.Columns[i]
+		}
+	}
+	return match
+}
+
+// ColumnIndex returns the position of a column or -1.
+func (b *Board) ColumnIndex(id string) int {
+	for i := range b.Columns {
+		if b.Columns[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// DoneColumn is the last column.
+func (b *Board) DoneColumn() *Column {
+	if len(b.Columns) == 0 {
+		return nil
+	}
+	return &b.Columns[len(b.Columns)-1]
+}
+
+// Task finds a task by ID.
+func (b *Board) Task(id int) *Task {
+	for i := range b.Tasks {
+		if b.Tasks[i].ID == id {
+			return &b.Tasks[i]
+		}
+	}
+	return nil
+}
+
+func (b *Board) taskIndex(id int) int {
+	for i := range b.Tasks {
+		if b.Tasks[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// TasksIn returns the live (unarchived) tasks of a column in board order.
+func (b *Board) TasksIn(colID string) []Task {
+	var out []Task
+	for _, t := range b.Tasks {
+		if t.Column == colID && !t.Archived() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// CountIn returns the number of live tasks in a column.
+func (b *Board) CountIn(colID string) int {
+	n := 0
+	for _, t := range b.Tasks {
+		if t.Column == colID && !t.Archived() {
+			n++
+		}
+	}
+	return n
+}
+
+// Live returns all unarchived tasks in board order.
+func (b *Board) Live() []Task {
+	var out []Task
+	for _, t := range b.Tasks {
+		if !t.Archived() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// ArchivedTasks returns archived tasks, most recently archived first.
+func (b *Board) ArchivedTasks() []Task {
+	var out []Task
+	for _, t := range b.Tasks {
+		if t.Archived() {
+			out = append(out, t)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ArchivedAt.After(*out[j].ArchivedAt) })
+	return out
+}
+
+// WIPExceeded reports whether a column holds more tasks than its limit.
+func (b *Board) WIPExceeded(colID string) bool {
+	c := b.Column(colID)
+	return c != nil && c.WIPLimit > 0 && b.CountIn(colID) > c.WIPLimit
+}
+
+// Labels returns every label in use, sorted.
+func (b *Board) Labels() []string {
+	seen := map[string]bool{}
+	for _, t := range b.Tasks {
+		for _, l := range t.Labels {
+			seen[l] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for l := range seen {
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AddTask assigns an ID and timestamps and appends the task to the board.
+func (b *Board) AddTask(t Task) (*Task, error) {
+	t.Title = strings.TrimSpace(t.Title)
+	if t.Title == "" {
+		return nil, fmt.Errorf("a title is required")
+	}
+	if t.Column == "" && len(b.Columns) > 0 {
+		t.Column = b.Columns[0].ID
+	}
+	col := b.Column(t.Column)
+	if col == nil {
+		return nil, fmt.Errorf("no column %q", t.Column)
+	}
+	t.Column = col.ID
+	if b.NextID < 1 {
+		b.NextID = 1
+	}
+	for b.Task(b.NextID) != nil {
+		b.NextID++
+	}
+	t.ID = b.NextID
+	b.NextID++
+	now := time.Now()
+	t.CreatedAt, t.UpdatedAt = now, now
+	t.Labels = normalizeLabels(t.Labels)
+	t.log("Created in %s", col.Name)
+	b.Tasks = append(b.Tasks, t)
+	return &b.Tasks[len(b.Tasks)-1], nil
+}
+
+// UpdateTask replaces the editable fields of a task and records what
+// changed.
+func (b *Board) UpdateTask(u Task) error {
+	t := b.Task(u.ID)
+	if t == nil {
+		return fmt.Errorf("no task #%d", u.ID)
+	}
+	u.Title = strings.TrimSpace(u.Title)
+	if u.Title == "" {
+		return fmt.Errorf("a title is required")
+	}
+	u.Labels = normalizeLabels(u.Labels)
+	var changes []string
+	if u.Title != t.Title {
+		changes = append(changes, fmt.Sprintf("renamed from %q", t.Title))
+	}
+	if u.Description != t.Description {
+		changes = append(changes, "description edited")
+	}
+	if u.Priority != t.Priority {
+		changes = append(changes, "priority "+u.Priority.String())
+	}
+	if u.Due != t.Due {
+		if u.Due == "" {
+			changes = append(changes, "due date cleared")
+		} else {
+			changes = append(changes, "due "+u.Due)
+		}
+	}
+	if strings.Join(u.Labels, ",") != strings.Join(t.Labels, ",") {
+		changes = append(changes, "labels "+strings.Join(u.Labels, ", "))
+	}
+	if u.Assignee != t.Assignee {
+		if u.Assignee == "" {
+			changes = append(changes, "unassigned")
+		} else {
+			changes = append(changes, "assigned to "+u.Assignee)
+		}
+	}
+	t.Title, t.Description, t.Priority, t.Due = u.Title, u.Description, u.Priority, u.Due
+	t.Labels, t.Assignee = u.Labels, u.Assignee
+	if len(changes) > 0 {
+		t.UpdatedAt = time.Now()
+		t.log("Edited: %s", strings.Join(changes, "; "))
+	}
+	return nil
+}
+
+// MoveTask moves a task to the end of another column.
+func (b *Board) MoveTask(id int, colID string) error {
+	i := b.taskIndex(id)
+	if i < 0 {
+		return fmt.Errorf("no task #%d", id)
+	}
+	col := b.Column(colID)
+	if col == nil {
+		return fmt.Errorf("no column %q", colID)
+	}
+	t := b.Tasks[i]
+	from := b.Column(t.Column)
+	if from != nil && from.ID == col.ID {
+		return nil
+	}
+	t.Column = col.ID
+	t.UpdatedAt = time.Now()
+	if from != nil {
+		t.log("Moved from %s to %s", from.Name, col.Name)
+	} else {
+		t.log("Moved to %s", col.Name)
+	}
+	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	b.Tasks = append(b.Tasks, t)
+	return nil
+}
+
+// ReorderTask swaps a task with its neighbour (delta -1 or +1) within its
+// column. It reports whether anything moved.
+func (b *Board) ReorderTask(id int, delta int) bool {
+	i := b.taskIndex(id)
+	if i < 0 {
+		return false
+	}
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	for j := i + step; j >= 0 && j < len(b.Tasks); j += step {
+		if b.Tasks[j].Column == b.Tasks[i].Column && !b.Tasks[j].Archived() {
+			b.Tasks[i], b.Tasks[j] = b.Tasks[j], b.Tasks[i]
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteTask removes a task permanently.
+func (b *Board) DeleteTask(id int) bool {
+	i := b.taskIndex(id)
+	if i < 0 {
+		return false
+	}
+	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	return true
+}
+
+// ArchiveTask hides a task from the board without deleting it.
+func (b *Board) ArchiveTask(id int) bool {
+	t := b.Task(id)
+	if t == nil || t.Archived() {
+		return false
+	}
+	now := time.Now()
+	t.ArchivedAt = &now
+	t.UpdatedAt = now
+	t.log("Archived")
+	return true
+}
+
+// RestoreTask brings an archived task back to its column.
+func (b *Board) RestoreTask(id int) bool {
+	t := b.Task(id)
+	if t == nil || !t.Archived() {
+		return false
+	}
+	t.ArchivedAt = nil
+	t.UpdatedAt = time.Now()
+	if b.Column(t.Column) == nil && len(b.Columns) > 0 {
+		t.Column = b.Columns[0].ID
+	}
+	t.log("Restored")
+	// Put it at the end of its column.
+	i := b.taskIndex(id)
+	tt := b.Tasks[i]
+	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	b.Tasks = append(b.Tasks, tt)
+	return true
+}
+
+// ArchiveDone archives every task in the last column and returns how many.
+func (b *Board) ArchiveDone() int {
+	done := b.DoneColumn()
+	if done == nil {
+		return 0
+	}
+	n := 0
+	for i := range b.Tasks {
+		if b.Tasks[i].Column == done.ID && !b.Tasks[i].Archived() {
+			b.ArchiveTask(b.Tasks[i].ID)
+			n++
+		}
+	}
+	return n
+}
+
+// AddComment appends a comment to a task.
+func (b *Board) AddComment(id int, text string) error {
+	t := b.Task(id)
+	if t == nil {
+		return fmt.Errorf("no task #%d", id)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("comment is empty")
+	}
+	now := time.Now()
+	t.Comments = append(t.Comments, Comment{At: now, Text: text})
+	t.UpdatedAt = now
+	t.log("Commented")
+	return nil
+}
+
+// AddChecklistItem appends an item to a task's checklist.
+func (b *Board) AddChecklistItem(id int, text string) error {
+	t := b.Task(id)
+	if t == nil {
+		return fmt.Errorf("no task #%d", id)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("checklist item is empty")
+	}
+	t.Checklist = append(t.Checklist, ChecklistItem{Text: text})
+	t.UpdatedAt = time.Now()
+	return nil
+}
+
+// ToggleChecklistItem flips the done state of checklist item i.
+func (b *Board) ToggleChecklistItem(id, i int) bool {
+	t := b.Task(id)
+	if t == nil || i < 0 || i >= len(t.Checklist) {
+		return false
+	}
+	t.Checklist[i].Done = !t.Checklist[i].Done
+	t.UpdatedAt = time.Now()
+	if t.Checklist[i].Done {
+		t.log("Checked %q", t.Checklist[i].Text)
+	} else {
+		t.log("Unchecked %q", t.Checklist[i].Text)
+	}
+	return true
+}
+
+// RemoveChecklistItem deletes checklist item i.
+func (b *Board) RemoveChecklistItem(id, i int) bool {
+	t := b.Task(id)
+	if t == nil || i < 0 || i >= len(t.Checklist) {
+		return false
+	}
+	t.Checklist = append(t.Checklist[:i], t.Checklist[i+1:]...)
+	t.UpdatedAt = time.Now()
+	return true
+}
+
+// AddAttachment records a link or file path on a task.
+func (b *Board) AddAttachment(id int, ref string) error {
+	t := b.Task(id)
+	if t == nil {
+		return fmt.Errorf("no task #%d", id)
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("attachment is empty")
+	}
+	t.Attachments = append(t.Attachments, ref)
+	t.UpdatedAt = time.Now()
+	t.log("Attached %s", ref)
+	return nil
+}
+
+// RemoveAttachment deletes attachment i.
+func (b *Board) RemoveAttachment(id, i int) bool {
+	t := b.Task(id)
+	if t == nil || i < 0 || i >= len(t.Attachments) {
+		return false
+	}
+	t.Attachments = append(t.Attachments[:i], t.Attachments[i+1:]...)
+	t.UpdatedAt = time.Now()
+	return true
+}
+
+// AddColumn appends a column. An empty colour picks the next palette entry.
+func (b *Board) AddColumn(name, color string, wip int) (*Column, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("column name is required")
+	}
+	for _, c := range b.Columns {
+		if strings.EqualFold(c.Name, name) {
+			return nil, fmt.Errorf("a column named %q already exists", name)
+		}
+	}
+	if color == "" {
+		color = columnPalette[len(b.Columns)%len(columnPalette)]
+	}
+	id := uniqueID(slug(name), func(id string) bool { return b.ColumnIndex(id) >= 0 })
+	b.Columns = append(b.Columns, Column{ID: id, Name: name, Color: color, WIPLimit: max(0, wip)})
+	return &b.Columns[len(b.Columns)-1], nil
+}
+
+// UpdateColumn renames, recolours or re-limits a column.
+func (b *Board) UpdateColumn(id, name, color string, wip int) error {
+	c := b.Column(id)
+	if c == nil {
+		return fmt.Errorf("no column %q", id)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("column name is required")
+	}
+	for _, other := range b.Columns {
+		if other.ID != c.ID && strings.EqualFold(other.Name, name) {
+			return fmt.Errorf("a column named %q already exists", name)
+		}
+	}
+	c.Name, c.Color, c.WIPLimit = name, color, max(0, wip)
+	return nil
+}
+
+// AllIn returns how many tasks, archived ones included, belong to a column.
+func (b *Board) AllIn(colID string) int {
+	n := 0
+	for _, t := range b.Tasks {
+		if t.Column == colID {
+			n++
+		}
+	}
+	return n
+}
+
+// RemoveColumn deletes a column, moving its tasks (archived ones included)
+// to moveTo. With an empty moveTo the tasks are deleted permanently. The
+// last remaining column cannot be removed.
+func (b *Board) RemoveColumn(id, moveTo string) error {
+	i := b.ColumnIndex(id)
+	if i < 0 {
+		return fmt.Errorf("no column %q", id)
+	}
+	if len(b.Columns) <= 1 {
+		return fmt.Errorf("cannot delete the only column")
+	}
+	var target *Column
+	if moveTo != "" {
+		target = b.Column(moveTo)
+		if target == nil || target.ID == id {
+			return fmt.Errorf("no column %q to move tasks to", moveTo)
+		}
+	}
+	kept := b.Tasks[:0]
+	for _, t := range b.Tasks {
+		if t.Column != id {
+			kept = append(kept, t)
+			continue
+		}
+		if target == nil {
+			continue
+		}
+		t.Column = target.ID
+		if !t.Archived() {
+			t.log("Moved to %s (column %s deleted)", target.Name, b.Columns[i].Name)
+		}
+		kept = append(kept, t)
+	}
+	b.Tasks = kept
+	b.Columns = append(b.Columns[:i], b.Columns[i+1:]...)
+	return nil
+}
+
+// MoveColumn shifts a column left (-1) or right (+1).
+func (b *Board) MoveColumn(id string, delta int) bool {
+	i := b.ColumnIndex(id)
+	j := i + delta
+	if i < 0 || j < 0 || j >= len(b.Columns) {
+		return false
+	}
+	b.Columns[i], b.Columns[j] = b.Columns[j], b.Columns[i]
+	return true
+}
+
+// normalizeLabels trims, lowercases, de-duplicates and sorts labels.
+func normalizeLabels(labels []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range labels {
+		l = strings.ToLower(strings.TrimSpace(l))
+		if l == "" || seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parseLabels splits a comma separated label list.
+func parseLabels(s string) []string {
+	return normalizeLabels(strings.Split(s, ","))
 }
