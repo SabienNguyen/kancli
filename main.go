@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -15,18 +16,20 @@ var version = "dev"
 
 // globalOpts are the flags accepted before a subcommand.
 type globalOpts struct {
-	file, board, theme, configPath string
-	ascii, compact, demo, version  bool
+	file, board, theme, configPath, asOf string
+	ascii, compact, demo, version        bool
 }
 
 // env is everything a command needs: config, store and loaded data.
 type env struct {
-	opts  globalOpts
-	cfg   config
-	st    styles
-	g     glyphs
-	store *store
-	file  *File
+	opts     globalOpts
+	cfg      config
+	st       styles
+	g        glyphs
+	store    *store
+	file     *File
+	readOnly bool
+	asOf     time.Time
 }
 
 func usage(w io.Writer) {
@@ -46,13 +49,19 @@ Commands:
   restore <id...>      restore archived tasks
   rm <id...>           delete tasks permanently
   due                  list overdue and due-today tasks (-days, -notify)
-  export               write the board as json, csv or markdown (-f, -o)
+  stats                cycle time, throughput, WIP and aging (-days, -json, -q SQL)
+  review               Markdown review of the last week (-days, -o)
+  log                  recent events (-n, -task)
+  export               write the board as json, csv, markdown or parquet (-f, -o)
   import <file>        read tasks from json, csv or markdown (-f, -c)
   boards               list boards; boards new|use|rename|rm <name>
   columns              list the columns of the board
+  compact              fold the event log into a fresh snapshot
   config               show the config file location and an example
   keys                 list configurable key actions
   version              print the version
+
+Add -as-of DATE before a command (or the UI) to see the board as it was.
 
 Flags:
 `)
@@ -75,6 +84,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.ascii, "ascii", false, "draw borders with ASCII characters")
 	fs.BoolVar(&o.compact, "compact", false, "two-line cards")
 	fs.BoolVar(&o.demo, "demo", false, "use sample data and don't save anything")
+	fs.StringVar(&o.asOf, "as-of", "", "read-only view of the board at a date or time (2026-08-25, yesterday, -7d)")
 	fs.BoolVar(&o.version, "version", false, "print the version and exit")
 	fs.Usage = func() {
 		usage(stderr)
@@ -101,7 +111,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	e, err := newEnv(o)
+	actor := "ui"
+	if len(rest) > 0 {
+		actor = "cli"
+	}
+	e, err := newEnv(o, actor)
 	if err != nil {
 		fmt.Fprintf(stderr, "kancli: %v\n", err)
 		return 1
@@ -120,7 +134,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		defer f.Close()
 	}
-	p := tea.NewProgram(newApp(e.cfg, e.st, e.g, e.store, e.file), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	a := newApp(e.cfg, e.st, e.g, e.store, e.file)
+	if e.readOnly {
+		a.readOnly, a.asOf = true, e.asOf
+	}
+	p := tea.NewProgram(a, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(stderr, "kancli: %v\n", err)
 		return 1
@@ -128,8 +146,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// newEnv loads the config, resolves the data file and reads it.
-func newEnv(o globalOpts) (*env, error) {
+// newEnv loads the config, resolves the data file and reads it. actor is
+// recorded on every event this process writes.
+func newEnv(o globalOpts, actor string) (*env, error) {
 	cfgPath := o.configPath
 	if cfgPath == "" {
 		p, err := defaultConfigPath()
@@ -155,9 +174,24 @@ func newEnv(o globalOpts) (*env, error) {
 	}
 	e := &env{opts: o, cfg: cfg, st: newStyles(th, cfg.ASCII), g: newGlyphs(cfg.ASCII)}
 
+	if o.asOf != "" {
+		t, err := parseAsOf(o.asOf, timeNow())
+		if err != nil {
+			return nil, err
+		}
+		e.asOf, e.readOnly = t, true
+	}
 	if o.demo {
 		e.store = newStore("")
-		e.file = sampleFile()
+		e.store.actor = actor
+		e.file = demoFile()
+		e.file.rec.actor = "demo"
+		if err := e.store.save(e.file); err != nil {
+			return nil, err
+		}
+		if e.readOnly {
+			return nil, fmt.Errorf("-as-of is not available in demo mode")
+		}
 		return e, nil
 	}
 	path := o.file
@@ -179,11 +213,45 @@ func newEnv(o globalOpts) (*env, error) {
 		}
 	}
 	e.store = newStore(path)
+	e.store.actor = actor
+	if e.readOnly {
+		e.file, err = e.store.loadAsOf(e.asOf)
+		if err != nil {
+			return nil, err
+		}
+		return e, nil
+	}
 	e.file, err = e.store.load()
 	if err != nil {
 		return nil, err
 	}
 	return e, nil
+}
+
+// parseAsOf accepts a date, a date-time, or a relative offset like -7d.
+func parseAsOf(s string, now time.Time) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "-") && len(s) > 1 {
+		d, err := parseDue("+"+s[1:], now)
+		if err == nil && d != "" {
+			t, _ := time.ParseInLocation(dateLayout, d, time.Local)
+			// +Nd added days; mirror it into the past.
+			delta := t.Sub(today())
+			return now.Add(-delta), nil
+		}
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04", "2006-01-02T15:04"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	d, err := parseDue(s, now)
+	if err != nil || d == "" {
+		return time.Time{}, fmt.Errorf("cannot parse -as-of %q (use 2026-08-25, 2026-08-25 14:00, yesterday or -7d)", s)
+	}
+	t, _ := time.ParseInLocation(dateLayout, d, time.Local)
+	// A bare date means the end of that day.
+	return t.AddDate(0, 0, 1).Add(-time.Nanosecond), nil
 }
 
 // board returns the board selected by -board or the active one.

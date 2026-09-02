@@ -34,8 +34,10 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Errorf("task changed in round trip:\n%+v\n%+v", a, b)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(path))
-	if len(entries) != 1 {
-		t.Errorf("temp files left behind: %d entries", len(entries))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
 	}
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), `"priority": "high"`) || !strings.Contains(string(data), `"version": 2`) {

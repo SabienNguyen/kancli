@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ const (
 	stateConfirm
 	statePrompt
 	statePicker
+	stateStats
 )
 
 const (
@@ -62,6 +64,7 @@ type app struct {
 	confirm confirmDialog
 	prompt  prompt
 	pick    picker
+	stats   statsView
 
 	searching bool
 	search    textinput.Model
@@ -83,8 +86,10 @@ type app struct {
 	statusMsg string
 	statusID  int
 	err       error
-	dirty     bool
 	quitting  bool
+
+	readOnly bool
+	asOf     time.Time
 }
 
 // newApp builds the root model for a loaded data file.
@@ -179,7 +184,12 @@ func (m *app) refresh() tea.Cmd {
 			}
 			tasks = kept
 		}
-		sortTasks(tasks, m.sortMode)
+		if m.sortMode == sortManual && len(q.words) > 0 {
+			// Free-text searches rank by relevance unless a sort was chosen.
+			sort.SliceStable(tasks, func(i, j int) bool { return relevance(q, tasks[i]) > relevance(q, tasks[j]) })
+		} else {
+			sortTasks(tasks, m.sortMode)
+		}
 		d := cardDelegate{st: m.st, g: m.g, compact: m.compact, marks: m.marks, now: now}
 		m.cols[i].configure(col, m.board.CountIn(col.ID), m.board.WIPExceeded(col.ID), d)
 		cmds = append(cmds, m.cols[i].setTasks(tasks))
@@ -252,7 +262,7 @@ func (m *app) restore(e undoEntry) bool {
 	if err := json.Unmarshal(e.board, &b); err != nil {
 		return false
 	}
-	*m.board = b
+	m.board.Replace(b)
 	m.rebuildColumns()
 	if e.focused < len(m.cols) {
 		m.focusColumn(e.focused)
@@ -261,22 +271,31 @@ func (m *app) restore(e undoEntry) bool {
 	return true
 }
 
-// persist writes the file unless it has changed on disk behind our back.
-func (m *app) persist(force bool) {
-	if !force && m.store.changedOnDisk() {
-		m.dirty = true
-		m.err = fmt.Errorf("file changed on disk: R reloads (discarding your change), ctrl+s overwrites")
-		return
+// persist appends the pending events to the log. Appending never
+// overwrites another process's work; if someone else appended first, the
+// file is re-read so their events are merged in.
+func (m *app) persist() (merged bool) {
+	if m.readOnly {
+		return false
 	}
 	m.err = m.store.save(m.file)
-	m.dirty = m.err != nil
+	if m.err == nil && m.store.needReload {
+		if err := m.reload(); err != nil {
+			m.err = err
+		}
+		return true
+	}
+	return false
 }
 
 // changed is called after every mutation: refresh the view, save, and show
 // a status message.
 func (m *app) changed(format string, args ...any) tea.Cmd {
 	cmd := m.refresh()
-	m.persist(false)
+	if m.persist() {
+		cmd = tea.Batch(m.refresh(), m.setStatus("Merged changes from another kancli"))
+		return cmd
+	}
 	if format == "" {
 		return cmd
 	}
@@ -293,7 +312,8 @@ func (m *app) setStatus(format string, args ...any) tea.Cmd {
 	})
 }
 
-// reload re-reads the data file, discarding in-memory changes.
+// reload re-reads the snapshot and log. Every local change has already
+// been appended, so nothing is lost; undo history is reset.
 func (m *app) reload() error {
 	f, err := m.store.load()
 	if err != nil {
@@ -306,7 +326,6 @@ func (m *app) reload() error {
 	}
 	m.board = f.Active()
 	m.undoStack, m.redoStack = nil, nil
-	m.dirty = false
 	m.err = nil
 	m.rebuildColumns()
 	m.refresh()
@@ -319,14 +338,14 @@ func (m *app) switchBoard(id string) tea.Cmd {
 	if b == nil {
 		return nil
 	}
-	m.file.ActiveBoard = b.ID
+	m.file.Activate(b.ID) //nolint:errcheck // board exists
 	m.board = b
 	m.focused = 0
 	m.cols = nil
 	m.marks = map[int]bool{}
 	m.undoStack, m.redoStack = nil, nil
 	m.rebuildColumns()
-	m.persist(false)
+	m.persist()
 	return tea.Batch(m.refresh(), m.setStatus("Opened board %q", b.Name))
 }
 
@@ -396,6 +415,9 @@ func (m *app) layout() {
 		m.pick.setSize(m.width, m.pickerHeight())
 	case statePrompt:
 		m.prompt.setSize(m.width)
+	case stateStats:
+		m.stats.setSize(m.width, m.height)
+		m.stats.render()
 	}
 }
 
@@ -433,7 +455,7 @@ func (m app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pollMsg:
-		if m.store.changedOnDisk() && !m.dirty && m.state == stateBoard {
+		if m.store.changedOnDisk() && !m.readOnly && m.state == stateBoard {
 			if err := m.reload(); err != nil {
 				m.err = err
 			} else {
@@ -490,6 +512,8 @@ func (m app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleDetailKey(msg)
 		case statePicker:
 			return m.handlePickerKey(msg)
+		case stateStats:
+			return m.handleStatsKey(msg)
 		default:
 			if m.searching {
 				return m.handleSearchKey(msg)
@@ -512,6 +536,8 @@ func (m app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail, cmd = m.detail.update(msg)
 	case statePicker:
 		m.pick, cmd = m.pick.update(msg)
+	case stateStats:
+		m.stats.vp, cmd = m.stats.vp.Update(msg)
 	default:
 		if m.searching {
 			m.search, cmd = m.search.Update(msg)
@@ -524,6 +550,12 @@ func (m app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m app) quit() (tea.Model, tea.Cmd) {
 	m.quitting = true
+	if !m.readOnly && m.store.enabled() && m.store.tailEvents() > 0 {
+		// Fold the tail into a fresh snapshot so board.json is current.
+		if err := m.store.compact(m.file); err != nil {
+			m.err = err
+		}
+	}
 	return m, tea.Quit
 }
 
@@ -553,11 +585,33 @@ func (m app) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// mutating reports whether a board key changes data.
+func (m app) mutating(msg tea.KeyMsg) bool {
+	k := m.keys
+	for _, b := range []key.Binding{k.New, k.Edit, k.Delete, k.Archive, k.MoveLeft, k.MoveRight, k.MoveUp, k.MoveDown,
+		k.Undo, k.Redo, k.ArchiveDone, k.AddColumn, k.EditColumn, k.DeleteColumn, k.ColLeft, k.ColRight, k.Save} {
+		if key.Matches(msg, b) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	k := m.keys
+	if m.readOnly && m.mutating(msg) {
+		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
+	}
 	switch {
 	case key.Matches(msg, k.Quit):
 		return m.quit()
+
+	case key.Matches(msg, k.Stats):
+		m.stats = newStatsView(m.st, m.g)
+		m.stats.setSize(m.width, m.height)
+		m.stats.load(m.board, m.store, timeNow())
+		m.state = stateStats
+		return m, nil
 
 	case key.Matches(msg, k.Help):
 		m.help.ShowAll = !m.help.ShowAll
@@ -677,7 +731,7 @@ func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.restore(e) {
 			m.redoStack = append(m.redoStack, cur)
 			cmd := m.refresh()
-			m.persist(false)
+			m.persist()
 			return m, tea.Batch(cmd, m.setStatus("Undid last change (%d left)", len(m.undoStack)))
 		}
 		return m, nil
@@ -692,7 +746,7 @@ func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.restore(e) {
 			m.undoStack = append(m.undoStack, cur)
 			cmd := m.refresh()
-			m.persist(false)
+			m.persist()
 			return m, tea.Batch(cmd, m.setStatus("Redid change"))
 		}
 		return m, nil
@@ -720,13 +774,6 @@ func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, k.Reload):
-		if m.dirty {
-			m.confirm = newConfirm(confirmReload, "Reload from disk?", m.st,
-				"Your unsaved change will be lost.")
-			m.back = stateBoard
-			m.state = stateConfirm
-			return m, nil
-		}
 		if err := m.reload(); err != nil {
 			m.err = err
 			return m, nil
@@ -734,11 +781,14 @@ func (m app) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.setStatus("Reloaded %s", m.store.describe())
 
 	case key.Matches(msg, k.Save):
-		m.persist(true)
-		if m.err != nil {
+		if m.readOnly {
+			return m, m.setStatus("Read-only view")
+		}
+		if err := m.store.compact(m.file); err != nil {
+			m.err = err
 			return m, nil
 		}
-		return m, m.setStatus("Saved %s", m.store.describe())
+		return m, m.setStatus("Snapshot written to %s", m.store.describe())
 
 	case key.Matches(msg, k.AddColumn):
 		m.colForm = newColumnForm(nil, m.st)
@@ -1017,12 +1067,6 @@ func (m app) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pick = newPicker(pickerArchive, "Archived tasks", archiveItems(m.board, m.g), m.st)
 		m.pick.setSize(m.width, m.pickerHeight())
 		return m, cmd
-	case confirmReload:
-		if err := m.reload(); err != nil {
-			m.err = err
-			return m, nil
-		}
-		return m, m.setStatus("Reloaded %s", m.store.describe())
 	}
 	return m, nil
 }
@@ -1052,6 +1096,10 @@ func (m app) handleFormSubmit(msg formSubmitMsg) (tea.Model, tea.Cmd) {
 		}
 		t = *added
 		what = "Added"
+		if sim := similarTasks(m.board, t.Title, t.ID, 1); len(sim) > 0 {
+			cmd := m.changed("Added %s %q", t.Ref(), t.Title)
+			return m, tea.Batch(cmd, m.setStatus("Added %s. Similar to %s %q", t.Ref(), sim[0].Task.Ref(), sim[0].Task.Title))
+		}
 	}
 	if m.state == stateDetail {
 		m.renderDetail()
@@ -1093,16 +1141,14 @@ func (m app) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		m.state = stateBoard
 		return m, tea.Batch(cmd, m.setStatus("Created board %q", b.Name))
 	case promptRenameBoard:
-		b := m.file.Board(msg.sref)
-		if b == nil || text == "" {
+		if text == "" {
 			return m, nil
 		}
-		if other := m.file.Board(text); other != nil && other.ID != b.ID {
-			return m, m.setStatus("A board named %q already exists", text)
+		if err := m.file.RenameBoard(msg.sref, text); err != nil {
+			return m, m.setStatus("%v", err)
 		}
-		b.Name = text
-		m.persist(false)
-		m.openBoardPicker(b.ID)
+		m.persist()
+		m.openBoardPicker(msg.sref)
 		return m, m.setStatus("Renamed board to %q", text)
 	case promptComment:
 		if text == "" {
@@ -1163,6 +1209,9 @@ func (m app) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	id := t.ID
+	if m.readOnly && !key.Matches(msg, k.Back) && !key.Matches(msg, k.Scroll) && !key.Matches(msg, k.Item) && !key.Matches(msg, k.Open) && msg.Type != tea.KeyCtrlC {
+		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
+	}
 	switch {
 	case msg.Type == tea.KeyCtrlC:
 		return m.quit()
@@ -1251,6 +1300,29 @@ func (m app) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m app) handleStatsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	k := m.stats.keys
+	switch {
+	case msg.Type == tea.KeyCtrlC:
+		return m.quit()
+	case key.Matches(msg, k.Back):
+		m.state = stateBoard
+		return m, nil
+	case key.Matches(msg, k.Window):
+		m.stats.cycleWindow()
+		m.stats.load(m.board, m.store, timeNow())
+		return m, nil
+	case key.Matches(msg, k.Refresh):
+		m.stats.load(m.board, m.store, timeNow())
+		return m, m.setStatus("Stats refreshed")
+	case key.Matches(msg, k.Scroll):
+		var cmd tea.Cmd
+		m.stats.vp, cmd = m.stats.vp.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
 func (m app) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pick.filtering() {
 		var cmd tea.Cmd
@@ -1266,6 +1338,9 @@ func (m app) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	item, ok := m.pick.selected()
+	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Delete) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
+		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
+	}
 	if m.pick.kind == pickerBoards {
 		switch {
 		case key.Matches(msg, k.Select):
@@ -1425,6 +1500,8 @@ func (m app) View() string {
 		return dialog(m.confirm.View())
 	case stateDetail:
 		return dialog(m.detail.view())
+	case stateStats:
+		return dialog(m.stats.view())
 	case statePicker:
 		return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.pick.view())
 	}
@@ -1478,6 +1555,8 @@ func (m app) headerView() string {
 		right = m.st.err.Render(m.err.Error())
 	case m.statusMsg != "":
 		right = m.st.success.Render(m.statusMsg)
+	case m.readOnly:
+		right = m.st.warning.Render("read-only · as of " + m.asOf.Format("Mon Jan 2 15:04"))
 	default:
 		var parts []string
 		if s := m.dueSummary(); s != "" {

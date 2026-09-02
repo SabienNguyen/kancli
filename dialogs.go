@@ -100,8 +100,6 @@ const (
 	confirmDeleteBoard
 	confirmArchiveDone
 	confirmDeleteArchived
-	confirmReload
-	confirmOverwrite
 )
 
 // confirmDialog asks a yes/no question.

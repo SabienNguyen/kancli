@@ -131,6 +131,18 @@ func (d *detailView) render(t Task, b *Board, now time.Time) {
 	}
 	out = append(out, "")
 
+	if sim := similarTasks(b, t.Title, t.ID, 3); len(sim) > 0 {
+		out = append(out, st.label.Render("Similar tasks"))
+		for _, s := range sim {
+			where := colName(b, s.Task.Column)
+			if s.Task.Archived() {
+				where = "archived"
+			}
+			out = append(out, wrap.Render(fmt.Sprintf("  %s %s %s", st.muted.Render(s.Task.Ref()), s.Task.Title, st.muted.Render("("+where+")"))))
+		}
+		out = append(out, "")
+	}
+
 	out = append(out, st.label.Render("Comments"))
 	if len(t.Comments) == 0 {
 		out = append(out, st.muted.Render("  none · press c to comment"))
@@ -149,6 +161,13 @@ func (d *detailView) render(t Task, b *Board, now time.Time) {
 		}
 	}
 	d.vp.SetContent(strings.Join(out, "\n"))
+}
+
+func colName(b *Board, id string) string {
+	if c := b.Column(id); c != nil {
+		return c.Name
+	}
+	return id
 }
 
 func colColor(b *Board, id string) string {

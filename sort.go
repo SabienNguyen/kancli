@@ -15,10 +15,11 @@ const (
 	sortCreated
 	sortUpdated
 	sortTitle
+	sortRelevance
 	numSortModes
 )
 
-var sortNames = [numSortModes]string{"manual", "priority", "due", "created", "updated", "title"}
+var sortNames = [numSortModes]string{"manual", "priority", "due", "created", "updated", "title", "relevance"}
 
 func (s sortMode) String() string {
 	if s < 0 || s >= numSortModes {
@@ -37,7 +38,15 @@ func parseSortMode(s string) (sortMode, bool) {
 	return sortManual, false
 }
 
-func (s sortMode) next() sortMode { return (s + 1) % numSortModes }
+// next cycles through the user-selectable modes; relevance is applied
+// automatically while searching.
+func (s sortMode) next() sortMode {
+	n := (s + 1) % numSortModes
+	if n == sortRelevance {
+		n = sortManual
+	}
+	return n
+}
 
 // sortTasks orders tasks in place for display. Manual order is the board
 // order and is left untouched.

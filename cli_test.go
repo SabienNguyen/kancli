@@ -257,3 +257,75 @@ func TestCLIAddFlagsAfterTitle(t *testing.T) {
 		t.Errorf("flags after the title were not honoured: %+v", tasks)
 	}
 }
+
+func TestCLIStatsLogReviewCompactAsOf(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	runCLI(t, path, "add", "-l", "bug", "Fix it")
+	runCLI(t, path, "add", "Ship it")
+	runCLI(t, path, "move", "1", "in")
+	runCLI(t, path, "done", "1")
+
+	out, errs, code := runCLI(t, path, "stats")
+	if code != 0 || !strings.Contains(out, "Finished 1") || !strings.Contains(out, "Throughput") || !strings.Contains(out, "+bug") {
+		t.Errorf("stats: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "stats", "-json")
+	var st boardStats
+	if err := json.Unmarshal([]byte(out), &st); err != nil || len(st.Finished) != 1 || st.Live != 2 {
+		t.Errorf("stats -json: %v live=%d finished=%d", err, st.Live, len(st.Finished))
+	}
+	out, _, _ = runCLI(t, path, "stats", "-sql")
+	if !strings.Contains(out, "CREATE OR REPLACE VIEW events") || !strings.Contains(out, "Throughput per ISO week") {
+		t.Errorf("stats -sql:\n%s", out)
+	}
+	t.Setenv("KANCLI_DUCKDB", "/definitely/missing/duckdb")
+	if _, errs, code := runCLI(t, path, "stats", "-q", "SELECT 1"); code != 1 || !strings.Contains(errs, "duckdb") {
+		t.Errorf("stats -q without duckdb: %d %q", code, errs)
+	}
+	if _, errs, code := runCLI(t, path, "export", "-f", "parquet", "-o", filepath.Join(t.TempDir(), "x.parquet")); code != 1 || !strings.Contains(errs, "duckdb") {
+		t.Errorf("parquet without duckdb: %d %q", code, errs)
+	}
+
+	out, _, _ = runCLI(t, path, "log")
+	for _, want := range []string{`created #1 "Fix it" in To Do`, "moved #1 from To Do to In Progress", "moved #1 from In Progress to Done", "[cli]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
+	}
+	out, _, _ = runCLI(t, path, "log", "-task", "2", "-json")
+	if strings.Count(out, "\n") != 1 || !strings.Contains(out, `"kind":"task.created"`) {
+		t.Errorf("log -task -json:\n%s", out)
+	}
+
+	out, _, _ = runCLI(t, path, "review", "-days", "1")
+	if !strings.Contains(out, "- Finished: **1**") || !strings.Contains(out, "- [x] #1 Fix it") || !strings.Contains(out, "- #2 Ship it") {
+		t.Errorf("review:\n%s", out)
+	}
+	mdFile := filepath.Join(t.TempDir(), "review.md")
+	runCLI(t, path, "review", "-o", mdFile)
+	if data, err := os.ReadFile(mdFile); err != nil || !strings.Contains(string(data), "# Main") {
+		t.Errorf("review -o: %v", err)
+	}
+
+	out, _, code = runCLI(t, path, "compact")
+	if code != 0 || !strings.Contains(out, "Snapshot written") {
+		t.Errorf("compact: %q", out)
+	}
+	st2 := newStore(path)
+	if _, err := st2.load(); err != nil || st2.tailEvents() != 0 {
+		t.Errorf("after compact tail=%d err=%v", st2.tailEvents(), err)
+	}
+
+	// As-of views are read-only and reflect history.
+	out, errs, code = runCLI(t, path, "-as-of", "-30d", "list")
+	if code != 0 || !strings.Contains(out, "No tasks") {
+		t.Errorf("as-of before the tasks: %d %q %q", code, out, errs)
+	}
+	if _, errs, code := runCLI(t, path, "-as-of", "today", "add", "nope"); code != 1 || !strings.Contains(errs, "read-only") {
+		t.Errorf("as-of should refuse writes: %d %q", code, errs)
+	}
+	out, _, _ = runCLI(t, path, "list")
+	if strings.Contains(out, "nope") {
+		t.Error("read-only add leaked into the board")
+	}
+}

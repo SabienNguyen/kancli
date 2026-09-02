@@ -45,6 +45,14 @@ func (c *cli) run(cmd string, args []string) int {
 		err = c.remove(args)
 	case "due":
 		err = c.due(args)
+	case "stats":
+		err = c.stats(args)
+	case "review":
+		err = c.review(args)
+	case "log", "history":
+		err = c.log(args)
+	case "compact":
+		err = c.compact(args)
 	case "export":
 		err = c.export(args)
 	case "import":
@@ -84,9 +92,204 @@ func (c *cli) flags(name string) *flag.FlagSet {
 }
 
 func (c *cli) save() error {
+	if c.env.readOnly {
+		return fmt.Errorf("the board is opened read-only with -as-of")
+	}
 	if err := c.env.store.save(c.env.file); err != nil {
 		return err
 	}
+	return nil
+}
+
+// --- stats / review / log / compact -------------------------------------------
+
+func (c *cli) stats(args []string) error {
+	fs := c.flags("stats")
+	var days int
+	var asJSON, showSQL bool
+	var query, format string
+	fs.IntVar(&days, "days", 90, "window for throughput, WIP and cycle time")
+	fs.BoolVar(&asJSON, "json", false, "print the statistics as JSON")
+	fs.StringVar(&query, "q", "", "run this SQL with DuckDB over the tasks and events views")
+	fs.StringVar(&format, "format", "box", "DuckDB output: box, json, csv or markdown")
+	fs.BoolVar(&showSQL, "sql", false, "print the DuckDB view definitions and example queries")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	if showSQL || query != "" {
+		state, cleanup, err := writeStateFile(c.env.file)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		views := sqlViews(state, c.env.store.eventFiles())
+		if showSQL {
+			fmt.Fprint(c.stdout, views)
+			fmt.Fprint(c.stdout, "\n"+exampleQueries)
+			return nil
+		}
+		bin, err := duckdbBinary()
+		if err != nil {
+			return err
+		}
+		out, err := runDuckDB(bin, views, query, format)
+		fmt.Fprint(c.stdout, out)
+		return err
+	}
+	events, err := c.env.store.events()
+	if err != nil {
+		return err
+	}
+	st := computeStats(b, events, timeNow(), days)
+	if asJSON {
+		enc := json.NewEncoder(c.stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(st)
+	}
+	fmt.Fprint(c.stdout, formatStats(st))
+	return nil
+}
+
+// formatStats renders statistics as plain text.
+func formatStats(st boardStats) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Board %s · last %d days · %d events\n\n", st.Board, st.Days, st.Events)
+	fmt.Fprintf(&sb, "Open %d · in progress %d · overdue %d · due today %d\n", st.Live, st.InProgress, st.Overdue, st.DueToday)
+	if len(st.Finished) > 0 {
+		fmt.Fprintf(&sb, "Finished %d · cycle time median %s, mean %s, p90 %s\n", len(st.Finished), humanDuration(st.CycleMedian), humanDuration(st.CycleMean), humanDuration(st.CycleP90))
+	} else {
+		sb.WriteString("Finished 0 · no cycle times yet\n")
+	}
+	sb.WriteString("\nThroughput (week starting: added / finished)\n")
+	for _, w := range st.Weeks {
+		fmt.Fprintf(&sb, "  %s  %3d / %-3d %s\n", w.Week.Format("Jan 02"), w.Created, w.Done, strings.Repeat("█", w.Done))
+	}
+	sb.WriteString("\nTime in column (mean / median, samples)\n")
+	for _, s := range st.Stays {
+		if s.Samples == 0 {
+			fmt.Fprintf(&sb, "  %-16s no completed stays yet\n", s.Name)
+			continue
+		}
+		fmt.Fprintf(&sb, "  %-16s %8s / %-8s %d\n", s.Name, humanDuration(s.Mean), humanDuration(s.Median), s.Samples)
+	}
+	if len(st.WIP) > 0 {
+		last := st.WIP[len(st.WIP)-1]
+		peak := 0
+		for _, d := range st.WIP {
+			peak = max(peak, d.Count)
+		}
+		fmt.Fprintf(&sb, "\nWork in progress: %d now, peak %d over %d days\n", last.Count, peak, len(st.WIP))
+	}
+	if len(st.Aging) > 0 {
+		sb.WriteString("\nOldest open tasks\n")
+		for _, a := range st.Aging {
+			fmt.Fprintf(&sb, "  %8s  #%-4d %s (%s)\n", humanDuration(a.Age), a.ID, a.Title, a.Column)
+		}
+	}
+	if len(st.Labels) > 0 {
+		sb.WriteString("\nLabels (open / finished, median cycle)\n")
+		for _, l := range st.Labels {
+			cycle := ""
+			if l.Done > 0 {
+				cycle = humanDuration(l.CycleMedian)
+			}
+			fmt.Fprintf(&sb, "  %-16s %3d / %-3d %s\n", "+"+l.Label, l.Open, l.Done, cycle)
+		}
+	}
+	return sb.String()
+}
+
+func (c *cli) review(args []string) error {
+	fs := c.flags("review")
+	var days int
+	var out string
+	fs.IntVar(&days, "days", 7, "period to review")
+	fs.StringVar(&out, "o", "", "write the Markdown to this file")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	events, err := c.env.store.events()
+	if err != nil {
+		return err
+	}
+	md := reviewReport(b, events, timeNow(), days)
+	if out != "" {
+		return os.WriteFile(out, []byte(md), 0o644)
+	}
+	_, err = io.WriteString(c.stdout, md)
+	return err
+}
+
+func (c *cli) log(args []string) error {
+	fs := c.flags("log")
+	var n, task int
+	var asJSON bool
+	fs.IntVar(&n, "n", 20, "number of events to show")
+	fs.IntVar(&task, "task", 0, "only events for this task id")
+	fs.BoolVar(&asJSON, "json", false, "print raw events as JSON lines")
+	if err := fs.Parse(args); err != nil {
+		return errUsage
+	}
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	events, err := c.env.store.events()
+	if err != nil {
+		return err
+	}
+	var picked []Event
+	for _, e := range events {
+		if e.Board != "" && e.Board != b.ID {
+			continue
+		}
+		if task != 0 && e.Task != task {
+			continue
+		}
+		picked = append(picked, e)
+	}
+	if n > 0 && len(picked) > n {
+		picked = picked[len(picked)-n:]
+	}
+	if len(picked) == 0 {
+		fmt.Fprintln(c.stdout, "No events.")
+		return nil
+	}
+	for _, e := range picked {
+		if asJSON {
+			line, _ := json.Marshal(e)
+			fmt.Fprintln(c.stdout, string(line))
+			continue
+		}
+		actor := ""
+		if e.Actor != "" {
+			actor = " [" + e.Actor + "]"
+		}
+		fmt.Fprintf(c.stdout, "%s  %s%s\n", e.At.Local().Format("2006-01-02 15:04"), e.describe(c.env.file), actor)
+	}
+	return nil
+}
+
+func (c *cli) compact(args []string) error {
+	if c.env.readOnly {
+		return fmt.Errorf("the board is opened read-only with -as-of")
+	}
+	if !c.env.store.enabled() {
+		return fmt.Errorf("nothing to compact in demo mode")
+	}
+	n := c.env.store.tailEvents()
+	if err := c.env.store.compact(c.env.file); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Snapshot written to %s (%d event%s archived)\n", c.env.store.path, n, plural(n))
 	return nil
 }
 
@@ -581,6 +784,8 @@ func formatFromPath(path, explicit string) string {
 		return "csv"
 	case ".md", ".markdown":
 		return "md"
+	case ".parquet":
+		return "parquet"
 	default:
 		return "json"
 	}
@@ -590,16 +795,43 @@ func (c *cli) export(args []string) error {
 	fs := c.flags("export")
 	var format, out string
 	var all bool
-	fs.StringVar(&format, "f", "", "json, csv or md (default from -o extension, else json)")
-	fs.StringVar(&format, "format", "", "json, csv or md")
-	fs.StringVar(&out, "o", "", "output file (default: stdout)")
+	var events bool
+	fs.StringVar(&format, "f", "", "json, csv, md or parquet (default from -o extension, else json)")
+	fs.StringVar(&format, "format", "", "json, csv, md or parquet")
+	fs.StringVar(&out, "o", "", "output file (default: stdout; required for parquet)")
 	fs.BoolVar(&all, "all", false, "json only: export every board, not just the current one")
+	fs.BoolVar(&events, "events", false, "parquet only: export the event log instead of tasks")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
 	b, err := c.env.board()
 	if err != nil {
 		return err
+	}
+	if formatFromPath(out, format) == "parquet" {
+		if out == "" {
+			return usageErr("parquet export needs -o FILE")
+		}
+		bin, err := duckdbBinary()
+		if err != nil {
+			return err
+		}
+		state, cleanup, err := writeStateFile(c.env.file)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		views := sqlViews(state, c.env.store.eventFiles())
+		source := fmt.Sprintf("SELECT * FROM tasks WHERE board = %s", sqlLiteral(b.ID))
+		if events {
+			source = fmt.Sprintf("SELECT * FROM events WHERE board = %s OR board IS NULL", sqlLiteral(b.ID))
+		}
+		_, err = runDuckDB(bin, views, fmt.Sprintf("COPY (%s) TO %s (FORMAT PARQUET)", source, sqlLiteral(out)), "csv")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(c.stdout, "Wrote %s\n", out)
+		return nil
 	}
 	w := c.stdout
 	if out != "" {
@@ -977,7 +1209,7 @@ func (c *cli) boards(args []string) error {
 		if err != nil {
 			return err
 		}
-		f.ActiveBoard = b.ID
+		f.Activate(b.ID) //nolint:errcheck // just created
 		if err := c.save(); err != nil {
 			return err
 		}
@@ -990,7 +1222,7 @@ func (c *cli) boards(args []string) error {
 		if b == nil {
 			return fmt.Errorf("no board %q", strings.Join(args[1:], " "))
 		}
-		f.ActiveBoard = b.ID
+		f.Activate(b.ID) //nolint:errcheck // board exists
 		if err := c.save(); err != nil {
 			return err
 		}
@@ -1003,10 +1235,9 @@ func (c *cli) boards(args []string) error {
 		if b == nil {
 			return fmt.Errorf("no board %q", args[1])
 		}
-		if other := f.Board(args[2]); other != nil && other != b {
-			return fmt.Errorf("a board named %q already exists", args[2])
+		if err := f.RenameBoard(b.ID, args[2]); err != nil {
+			return err
 		}
-		b.Name = args[2]
 		if err := c.save(); err != nil {
 			return err
 		}

@@ -4,6 +4,26 @@
 
 ### Added
 
+- Event-sourced storage: every change is appended to `board.events.jsonl`;
+  snapshots are written on quit, `ctrl+s`, `kancli compact` or every 500
+  events, and archived segments keep the full history.
+- `-as-of DATE` opens the board (or runs `list`, `show`, `stats`, `export`)
+  as it was at that time, read-only.
+- Stats (`S` in the app, `kancli stats`): cycle time, time per column,
+  weekly throughput, work in progress per day, aging tasks and per-label
+  figures, drawn with sparklines and bar charts.
+- `kancli review` writes a Markdown review of the last week from the log.
+- `kancli log` prints recent events in words or as JSON.
+- DuckDB bridge: `kancli stats -q SQL` over `tasks`, `events`, `moves`,
+  `column_stays` and `cycle_times` views; `kancli stats -sql` prints the
+  view definitions; Parquet export of tasks or events.
+- Relevance-ranked search results for free-text queries.
+- Similar-task detection when adding a task and on the task page.
+- Concurrent writers are merged instead of refused; the "file changed on
+  disk" conflict mode is gone.
+- Boards that predate the log get a bootstrapped history from their task
+  timestamps.
+
 - Task priority, due dates (with natural input like `fri` or `+3d`), labels,
   assignee, checklists, attachments, comments and a per-task activity log.
 - User-visible task numbers (`#12`) on every card.

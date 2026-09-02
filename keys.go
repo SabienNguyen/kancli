@@ -14,7 +14,7 @@ type keyMap struct {
 	New, Edit, View, Delete, Archive, Mark                 key.Binding
 	MoveLeft, MoveRight, MoveUp, MoveDown                  key.Binding
 	Search, Sort, Undo, Redo                               key.Binding
-	Boards, ArchiveView, ArchiveDone, Reload, Save         key.Binding
+	Boards, ArchiveView, ArchiveDone, Reload, Save, Stats  key.Binding
 	AddColumn, EditColumn, DeleteColumn, ColLeft, ColRight key.Binding
 	Help, Quit, Back                                       key.Binding
 }
@@ -30,7 +30,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Left, k.Right, k.Jump, k.Back},
 		{k.New, k.View, k.Edit, k.Delete, k.Archive, k.Mark},
 		{k.MoveLeft, k.MoveRight, k.MoveUp, k.MoveDown, k.Search, k.Sort},
-		{k.Undo, k.Redo, k.Boards, k.ArchiveView, k.ArchiveDone, k.Reload},
+		{k.Undo, k.Redo, k.Boards, k.ArchiveView, k.ArchiveDone, k.Stats, k.Reload},
 		{k.AddColumn, k.EditColumn, k.DeleteColumn, k.ColLeft, k.ColRight, k.Save},
 		{k.Help, k.Quit},
 	}
@@ -65,8 +65,9 @@ func defaultKeyMap() keyMap {
 		Boards:       bind("b", "boards", "b"),
 		ArchiveView:  bind("z", "archived tasks", "z"),
 		ArchiveDone:  bind("Z", "archive all done", "Z"),
+		Stats:        bind("S", "stats", "S"),
 		Reload:       bind("R", "reload file", "R"),
-		Save:         bind("ctrl+s", "force save", "ctrl+s"),
+		Save:         bind("ctrl+s", "write snapshot", "ctrl+s"),
 		AddColumn:    bind("C", "add column", "C"),
 		EditColumn:   bind("E", "edit column", "E"),
 		DeleteColumn: bind("D", "delete column", "D"),
@@ -84,7 +85,7 @@ func (k *keyMap) actions() map[string]*key.Binding {
 		"new": &k.New, "view": &k.View, "edit": &k.Edit, "delete": &k.Delete, "archive": &k.Archive, "mark": &k.Mark,
 		"move_left": &k.MoveLeft, "move_right": &k.MoveRight, "move_up": &k.MoveUp, "move_down": &k.MoveDown,
 		"search": &k.Search, "sort": &k.Sort, "undo": &k.Undo, "redo": &k.Redo,
-		"boards": &k.Boards, "archive_view": &k.ArchiveView, "archive_done": &k.ArchiveDone, "reload": &k.Reload, "save": &k.Save,
+		"boards": &k.Boards, "archive_view": &k.ArchiveView, "archive_done": &k.ArchiveDone, "reload": &k.Reload, "save": &k.Save, "stats": &k.Stats,
 		"add_column": &k.AddColumn, "edit_column": &k.EditColumn, "delete_column": &k.DeleteColumn,
 		"column_left": &k.ColLeft, "column_right": &k.ColRight,
 		"help": &k.Help, "quit": &k.Quit,

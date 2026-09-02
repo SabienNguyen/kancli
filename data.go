@@ -13,9 +13,13 @@ const fileVersion = 2
 
 // File is the whole data file: every board plus which one is active.
 type File struct {
-	Version     int      `json:"version"`
-	ActiveBoard string   `json:"active_board"`
-	Boards      []*Board `json:"boards"`
+	Version     int       `json:"version"`
+	ActiveBoard string    `json:"active_board"`
+	Boards      []*Board  `json:"boards"`
+	LastSeq     int64     `json:"last_seq,omitempty"`   // last event folded into this snapshot
+	SnapshotAt  time.Time `json:"snapshot_at,omitzero"` // when the snapshot was written
+
+	rec *recorder
 }
 
 // Board is one kanban board with its columns and tasks.
@@ -25,6 +29,9 @@ type Board struct {
 	Columns []Column `json:"columns"`
 	Tasks   []Task   `json:"tasks"`
 	NextID  int      `json:"next_id"`
+
+	rec   *recorder
+	clock func() time.Time
 }
 
 // Column is one lane on a board. The last column is treated as "done".
@@ -95,8 +102,8 @@ type Comment struct {
 	Text string    `json:"text"`
 }
 
-// Event is one line of a task's activity history.
-type Event struct {
+// HistoryEntry is one line of a task's activity history.
+type HistoryEntry struct {
 	At   time.Time `json:"at"`
 	Text string    `json:"text"`
 }
@@ -114,7 +121,7 @@ type Task struct {
 	Checklist   []ChecklistItem `json:"checklist,omitempty"`
 	Attachments []string        `json:"attachments,omitempty"`
 	Comments    []Comment       `json:"comments,omitempty"`
-	History     []Event         `json:"history,omitempty"`
+	History     []HistoryEntry  `json:"history,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
 	ArchivedAt  *time.Time      `json:"archived_at,omitempty"`
@@ -160,8 +167,8 @@ func (t Task) FirstLine() string {
 	return first
 }
 
-func (t *Task) log(format string, args ...any) {
-	t.History = append(t.History, Event{At: time.Now(), Text: fmt.Sprintf(format, args...)})
+func (t *Task) logAt(at time.Time, format string, args ...any) {
+	t.History = append(t.History, HistoryEntry{At: at, Text: fmt.Sprintf(format, args...)})
 }
 
 // defaultColumns are used for new boards.
@@ -180,7 +187,9 @@ var columnPalette = []string{"62", "214", "35", "205", "39", "208", "99", "171",
 // newFile creates a data file with one empty board.
 func newFile() *File {
 	b := newBoard("Main")
-	return &File{Version: fileVersion, ActiveBoard: b.ID, Boards: []*Board{b}}
+	f := &File{Version: fileVersion, ActiveBoard: b.ID, Boards: []*Board{b}}
+	f.attach()
+	return f
 }
 
 func newBoard(name string) *Board {
@@ -258,7 +267,40 @@ func (f *File) AddBoard(name string) (*Board, error) {
 	b := newBoard(name)
 	b.ID = uniqueID(b.ID, func(id string) bool { return f.Board(id) != nil })
 	f.Boards = append(f.Boards, b)
+	f.attach()
+	f.emit(Event{Kind: evBoardAdded, Board: b.ID, Data: mustJSON(Board{ID: b.ID, Name: b.Name, Columns: b.Columns, NextID: b.NextID})})
 	return b, nil
+}
+
+// RenameBoard changes a board's name.
+func (f *File) RenameBoard(id, name string) error {
+	b := f.Board(id)
+	if b == nil {
+		return fmt.Errorf("no board %q", id)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("board name is required")
+	}
+	if other := f.Board(name); other != nil && other != b {
+		return fmt.Errorf("a board named %q already exists", name)
+	}
+	b.Name = name
+	f.emit(Event{Kind: evBoardRenamed, Board: b.ID, Text: name})
+	return nil
+}
+
+// Activate makes a board the active one.
+func (f *File) Activate(id string) error {
+	b := f.Board(id)
+	if b == nil {
+		return fmt.Errorf("no board %q", id)
+	}
+	if f.ActiveBoard != b.ID {
+		f.ActiveBoard = b.ID
+		f.emit(Event{Kind: evBoardActivated, To: b.ID})
+	}
+	return nil
 }
 
 // RemoveBoard deletes a board. The last board cannot be removed.
@@ -272,6 +314,7 @@ func (f *File) RemoveBoard(id string) error {
 			if f.ActiveBoard == id {
 				f.ActiveBoard = f.Boards[0].ID
 			}
+			f.emit(Event{Kind: evBoardRemoved, Board: id})
 			return nil
 		}
 	}
@@ -434,12 +477,15 @@ func (b *Board) AddTask(t Task) (*Task, error) {
 	}
 	t.ID = b.NextID
 	b.NextID++
-	now := time.Now()
+	now := b.now()
 	t.CreatedAt, t.UpdatedAt = now, now
 	t.Labels = normalizeLabels(t.Labels)
-	t.log("Created in %s", col.Name)
+	t.History = nil
+	t.logAt(now, "Created in %s", col.Name)
 	b.Tasks = append(b.Tasks, t)
-	return &b.Tasks[len(b.Tasks)-1], nil
+	added := &b.Tasks[len(b.Tasks)-1]
+	b.emit(Event{Kind: evTaskCreated, Task: t.ID, To: t.Column, Data: mustJSON(*added)})
+	return added, nil
 }
 
 // UpdateTask replaces the editable fields of a task and records what
@@ -484,8 +530,9 @@ func (b *Board) UpdateTask(u Task) error {
 	t.Title, t.Description, t.Priority, t.Due = u.Title, u.Description, u.Priority, u.Due
 	t.Labels, t.Assignee = u.Labels, u.Assignee
 	if len(changes) > 0 {
-		t.UpdatedAt = time.Now()
-		t.log("Edited: %s", strings.Join(changes, "; "))
+		t.UpdatedAt = b.now()
+		t.logAt(t.UpdatedAt, "Edited: %s", strings.Join(changes, "; "))
+		b.emit(Event{Kind: evTaskUpdated, Task: t.ID, Text: strings.Join(changes, "; "), Data: mustJSON(*t)})
 	}
 	return nil
 }
@@ -505,15 +552,17 @@ func (b *Board) MoveTask(id int, colID string) error {
 	if from != nil && from.ID == col.ID {
 		return nil
 	}
+	fromID := t.Column
 	t.Column = col.ID
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
 	if from != nil {
-		t.log("Moved from %s to %s", from.Name, col.Name)
+		t.logAt(t.UpdatedAt, "Moved from %s to %s", from.Name, col.Name)
 	} else {
-		t.log("Moved to %s", col.Name)
+		t.logAt(t.UpdatedAt, "Moved to %s", col.Name)
 	}
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, t)
+	b.emit(Event{Kind: evTaskMoved, Task: t.ID, From: fromID, To: col.ID})
 	return nil
 }
 
@@ -531,6 +580,7 @@ func (b *Board) ReorderTask(id int, delta int) bool {
 	for j := i + step; j >= 0 && j < len(b.Tasks); j += step {
 		if b.Tasks[j].Column == b.Tasks[i].Column && !b.Tasks[j].Archived() {
 			b.Tasks[i], b.Tasks[j] = b.Tasks[j], b.Tasks[i]
+			b.emit(Event{Kind: evTaskReordered, Task: id, Index: step})
 			return true
 		}
 	}
@@ -543,7 +593,9 @@ func (b *Board) DeleteTask(id int) bool {
 	if i < 0 {
 		return false
 	}
+	col := b.Tasks[i].Column
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	b.emit(Event{Kind: evTaskDeleted, Task: id, From: col})
 	return true
 }
 
@@ -553,10 +605,11 @@ func (b *Board) ArchiveTask(id int) bool {
 	if t == nil || t.Archived() {
 		return false
 	}
-	now := time.Now()
+	now := b.now()
 	t.ArchivedAt = &now
 	t.UpdatedAt = now
-	t.log("Archived")
+	t.logAt(now, "Archived")
+	b.emit(Event{Kind: evTaskArchived, Task: id, From: t.Column})
 	return true
 }
 
@@ -567,16 +620,17 @@ func (b *Board) RestoreTask(id int) bool {
 		return false
 	}
 	t.ArchivedAt = nil
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
 	if b.Column(t.Column) == nil && len(b.Columns) > 0 {
 		t.Column = b.Columns[0].ID
 	}
-	t.log("Restored")
+	t.logAt(t.UpdatedAt, "Restored")
 	// Put it at the end of its column.
 	i := b.taskIndex(id)
 	tt := b.Tasks[i]
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, tt)
+	b.emit(Event{Kind: evTaskRestored, Task: id, To: tt.Column})
 	return true
 }
 
@@ -606,10 +660,11 @@ func (b *Board) AddComment(id int, text string) error {
 	if text == "" {
 		return fmt.Errorf("comment is empty")
 	}
-	now := time.Now()
+	now := b.now()
 	t.Comments = append(t.Comments, Comment{At: now, Text: text})
 	t.UpdatedAt = now
-	t.log("Commented")
+	t.logAt(now, "Commented")
+	b.emit(Event{Kind: evCommentAdded, Task: id, Text: text})
 	return nil
 }
 
@@ -624,7 +679,8 @@ func (b *Board) AddChecklistItem(id int, text string) error {
 		return fmt.Errorf("checklist item is empty")
 	}
 	t.Checklist = append(t.Checklist, ChecklistItem{Text: text})
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
+	b.emit(Event{Kind: evChecklistAdded, Task: id, Text: text})
 	return nil
 }
 
@@ -635,12 +691,13 @@ func (b *Board) ToggleChecklistItem(id, i int) bool {
 		return false
 	}
 	t.Checklist[i].Done = !t.Checklist[i].Done
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
 	if t.Checklist[i].Done {
-		t.log("Checked %q", t.Checklist[i].Text)
+		t.logAt(t.UpdatedAt, "Checked %q", t.Checklist[i].Text)
 	} else {
-		t.log("Unchecked %q", t.Checklist[i].Text)
+		t.logAt(t.UpdatedAt, "Unchecked %q", t.Checklist[i].Text)
 	}
+	b.emit(Event{Kind: evChecklistToggled, Task: id, Index: i})
 	return true
 }
 
@@ -651,7 +708,8 @@ func (b *Board) RemoveChecklistItem(id, i int) bool {
 		return false
 	}
 	t.Checklist = append(t.Checklist[:i], t.Checklist[i+1:]...)
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
+	b.emit(Event{Kind: evChecklistRemoved, Task: id, Index: i})
 	return true
 }
 
@@ -666,8 +724,9 @@ func (b *Board) AddAttachment(id int, ref string) error {
 		return fmt.Errorf("attachment is empty")
 	}
 	t.Attachments = append(t.Attachments, ref)
-	t.UpdatedAt = time.Now()
-	t.log("Attached %s", ref)
+	t.UpdatedAt = b.now()
+	t.logAt(t.UpdatedAt, "Attached %s", ref)
+	b.emit(Event{Kind: evAttachmentAdded, Task: id, Text: ref})
 	return nil
 }
 
@@ -678,7 +737,8 @@ func (b *Board) RemoveAttachment(id, i int) bool {
 		return false
 	}
 	t.Attachments = append(t.Attachments[:i], t.Attachments[i+1:]...)
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = b.now()
+	b.emit(Event{Kind: evAttachmentRemoved, Task: id, Index: i})
 	return true
 }
 
@@ -698,7 +758,9 @@ func (b *Board) AddColumn(name, color string, wip int) (*Column, error) {
 	}
 	id := uniqueID(slug(name), func(id string) bool { return b.ColumnIndex(id) >= 0 })
 	b.Columns = append(b.Columns, Column{ID: id, Name: name, Color: color, WIPLimit: max(0, wip)})
-	return &b.Columns[len(b.Columns)-1], nil
+	col := &b.Columns[len(b.Columns)-1]
+	b.emit(Event{Kind: evColumnAdded, To: id, Data: mustJSON(*col)})
+	return col, nil
 }
 
 // UpdateColumn renames, recolours or re-limits a column.
@@ -717,6 +779,7 @@ func (b *Board) UpdateColumn(id, name, color string, wip int) error {
 		}
 	}
 	c.Name, c.Color, c.WIPLimit = name, color, max(0, wip)
+	b.emit(Event{Kind: evColumnUpdated, To: c.ID, Data: mustJSON(*c)})
 	return nil
 }
 
@@ -760,12 +823,17 @@ func (b *Board) RemoveColumn(id, moveTo string) error {
 		}
 		t.Column = target.ID
 		if !t.Archived() {
-			t.log("Moved to %s (column %s deleted)", target.Name, b.Columns[i].Name)
+			t.logAt(b.now(), "Moved to %s (column %s deleted)", target.Name, b.Columns[i].Name)
 		}
 		kept = append(kept, t)
 	}
 	b.Tasks = kept
 	b.Columns = append(b.Columns[:i], b.Columns[i+1:]...)
+	to := ""
+	if target != nil {
+		to = target.ID
+	}
+	b.emit(Event{Kind: evColumnRemoved, From: id, To: to})
 	return nil
 }
 
@@ -777,7 +845,17 @@ func (b *Board) MoveColumn(id string, delta int) bool {
 		return false
 	}
 	b.Columns[i], b.Columns[j] = b.Columns[j], b.Columns[i]
+	b.emit(Event{Kind: evColumnMoved, From: id, Index: delta})
 	return true
+}
+
+// Replace swaps in a whole board state (used by undo) and records it as a
+// single event so replay reproduces it.
+func (b *Board) Replace(nb Board) {
+	rec, clock := b.rec, b.clock
+	*b = nb
+	b.rec, b.clock = rec, clock
+	b.emit(Event{Kind: evBoardRestored, Data: mustJSON(nb)})
 }
 
 // normalizeLabels trims, lowercases, de-duplicates and sorts labels.

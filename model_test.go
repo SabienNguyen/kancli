@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -434,44 +434,64 @@ func TestColumnsAndBoards(t *testing.T) {
 	}
 }
 
-func TestExternalChangeDetection(t *testing.T) {
+func TestExternalChangesAreMerged(t *testing.T) {
 	m, st := newTestApp(t)
-	// Someone else writes the file.
+	// Another process appends an event.
 	other := newStore(st.path)
-	f, _ := other.load()
-	f.Active().AddTask(Task{Title: "From elsewhere"})
-	time.Sleep(10 * time.Millisecond)
+	other.actor = "cli"
+	f, err := other.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Active().AddTask(Task{Title: "From elsewhere"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := other.save(f); err != nil {
 		t.Fatal(err)
 	}
-	os.Chtimes(st.path, time.Now(), time.Now().Add(2*time.Second))
 
-	// A poll with no local changes reloads silently.
+	// A poll picks it up.
+	if !st.changedOnDisk() {
+		t.Fatal("appended events should be detected")
+	}
 	mm, _ := m.Update(pollMsg{})
 	m = mm.(app)
-	if m.board.Task(9) == nil {
-		t.Fatal("poll should have reloaded the external task")
+	if m.board.Task(9) == nil || m.board.Task(9).Title != "From elsewhere" {
+		t.Fatal("poll should have replayed the external event")
 	}
 
-	// Change again on disk, then make a local change: the save is refused.
-	f.Active().AddTask(Task{Title: "Another"})
-	time.Sleep(10 * time.Millisecond)
-	other.save(f)
-	os.Chtimes(st.path, time.Now(), time.Now().Add(4*time.Second))
+	// Another external event followed by a local change: both survive.
+	f.Active().AddTask(Task{Title: "Another"}) //nolint:errcheck // test data
+	if err := other.save(f); err != nil {
+		t.Fatal(err)
+	}
 	m = press(m, "L")
-	if m.err == nil || !m.dirty {
-		t.Fatal("save should be refused when the file changed on disk")
+	if m.err != nil {
+		t.Fatalf("local change failed: %v", m.err)
 	}
-	if !strings.Contains(m.View(), "changed on disk") {
-		t.Error("header should explain the conflict")
+	if m.board.Task(10) == nil || m.board.Task(1).Column != "in_progress" {
+		t.Errorf("merge lost a change: external=%v local=%v", m.board.Task(10) != nil, m.board.Task(1).Column)
 	}
-	m = press(m, "ctrl+s")
-	if m.err != nil || m.dirty {
-		t.Error("ctrl+s should force the save")
+	// The other process sees the local move after reloading.
+	f, err = other.load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	f, _ = other.load()
 	if f.Active().Task(1).Column != "in_progress" {
-		t.Error("forced save did not write the local change")
+		t.Error("the other process should replay the local move")
+	}
+
+	// ctrl+s writes a snapshot and archives the tail.
+	m = press(m, "ctrl+s")
+	if m.err != nil || st.tailEvents() != 0 {
+		t.Errorf("compact: err=%v tail=%d", m.err, st.tailEvents())
+	}
+	if segs, _ := filepath.Glob(filepath.Join(st.archiveDir, "*.jsonl")); len(segs) == 0 {
+		t.Error("compaction should archive the tail log")
+	}
+	f, _ = newStore(st.path).load()
+	if f.Active().Task(1).Column != "in_progress" || f.Active().Task(10) == nil {
+		t.Error("snapshot should carry the merged state")
 	}
 }
 
@@ -556,5 +576,106 @@ func TestConfiguredCursorKeys(t *testing.T) {
 	m = press(m, "e")
 	if sel, _ := m.col().selected(); sel.ID != 1 || m.state != stateBoard {
 		t.Errorf("configured up key failed: selected %d state %v", sel.ID, m.state)
+	}
+}
+
+func TestStatsScreenAndRelevance(t *testing.T) {
+	s, g := testStyles()
+	st := newStore("")
+	f := demoFile()
+	if err := st.save(f); err != nil {
+		t.Fatal(err)
+	}
+	m := newApp(config{}, s, g, st, f)
+	for _, size := range [][2]int{{60, 18}, {110, 40}} {
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		a := press(mm.(app), "S")
+		if a.state != stateStats {
+			t.Fatal("S should open the stats screen")
+		}
+		assertFits(t, a, "stats")
+		if size[1] >= 40 {
+			v := a.View()
+			for _, want := range []string{"Stats", "finished", "Finished per week", "Work in progress", "Mean time in column"} {
+				if !strings.Contains(v, want) {
+					t.Errorf("stats view missing %q", want)
+				}
+			}
+		}
+		a = press(a, "w")
+		if a.stats.days != 365 {
+			t.Errorf("w should cycle the window, got %d", a.stats.days)
+		}
+		a = press(a, "j", "esc")
+		if a.state != stateBoard {
+			t.Error("esc should return to the board")
+		}
+	}
+
+	// Free-text search ranks by relevance: the title hit comes first.
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 40})
+	a := press(mm.(app), "/")
+	a = typeText(a, "release")
+	if got := visibleTitles(a, 0); len(got) == 0 || got[0] != "Write the release notes" {
+		t.Errorf("relevance order = %v", got)
+	}
+	if !strings.Contains(a.View(), "match") {
+		t.Error("search bar should show the match count")
+	}
+	a = press(a, "esc")
+
+	// Creating a near-duplicate warns.
+	a = press(a, "n")
+	a = typeText(a, "Write release notes")
+	a = press(a, "ctrl+s")
+	if !strings.Contains(a.statusMsg, "Similar to #1") {
+		t.Errorf("status = %q", a.statusMsg)
+	}
+	a = press(a, "enter")
+	if !strings.Contains(a.View(), "Similar tasks") {
+		t.Error("detail view should list similar tasks")
+	}
+}
+
+func TestReadOnlyAsOfView(t *testing.T) {
+	m, st := newTestApp(t)
+	m = press(m, "L", "ctrl+s")
+	if m.err != nil {
+		t.Fatal(m.err)
+	}
+	past, err := st.loadAsOf(timeNow().Add(-10 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, g := testStyles()
+	ro := newApp(config{}, s, g, newStore(st.path), past)
+	ro.readOnly, ro.asOf = true, timeNow().Add(-10*24*time.Hour)
+	mm, _ := ro.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
+	ro = mm.(app)
+	if !strings.Contains(ro.View(), "read-only") {
+		t.Error("header should show the read-only banner")
+	}
+	before := stateOf(ro.file)
+	for _, k := range []string{"L", "d", "n", "a", "u", "C", "D", "Z", "ctrl+s"} {
+		ro = press(ro, k)
+		if ro.state != stateBoard {
+			ro = press(ro, "esc")
+		}
+	}
+	if stateOf(ro.file) != before {
+		t.Error("read-only view was mutated")
+	}
+	if !strings.Contains(ro.statusMsg, "Read-only") {
+		t.Errorf("status = %q", ro.statusMsg)
+	}
+	ro = press(ro, "enter", "c")
+	if ro.state != stateDetail || !strings.Contains(ro.statusMsg, "Read-only") {
+		t.Error("detail view mutations should be blocked")
+	}
+	if tail := newStore(st.path); tail.enabled() {
+		f2, _ := tail.load()
+		if f2.Active().Task(1).Column != "in_progress" {
+			t.Error("the live board should be untouched by the read-only session")
+		}
 	}
 }
