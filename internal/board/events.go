@@ -48,6 +48,20 @@ const EventVersion = 1
 // does not understand, so callers can word the advice.
 var ErrNewerEvents = errors.New("written by a newer kancli")
 
+// NewerEventError is the replay failure ErrNewerEvents stands for. It
+// carries the offending event's identity and a bare detail (no advice, no
+// "newer kancli" phrase) so callers can word the advice once themselves.
+type NewerEventError struct {
+	Seq    int64
+	Kind   EventKind
+	Detail string
+}
+
+func (e *NewerEventError) Error() string { return e.Detail }
+
+// Is reports NewerEventError as ErrNewerEvents so errors.Is keeps working.
+func (e *NewerEventError) Is(target error) bool { return target == ErrNewerEvents }
+
 // Event is one line of the append-only log. State is derived by replaying
 // events on top of a snapshot, and analytics read the same lines.
 type Event struct {
@@ -193,7 +207,8 @@ func (f *File) Pending() []Event {
 // original mutation exactly.
 func (f *File) Apply(e Event) error {
 	if e.V > EventVersion {
-		return fmt.Errorf("%w: event %d (%s) is format v%d, this build reads v%d", ErrNewerEvents, e.Seq, e.Kind, e.V, EventVersion)
+		return &NewerEventError{Seq: e.Seq, Kind: e.Kind,
+			Detail: fmt.Sprintf("format v%d, this build reads v%d", e.V, EventVersion)}
 	}
 	f.Attach()
 	rec := f.rec
@@ -312,7 +327,8 @@ func (f *File) Apply(e Event) error {
 		*b = nb
 		b.clock = func() time.Time { return at }
 	default:
-		return fmt.Errorf("%w: unknown event kind %q at seq %d", ErrNewerEvents, e.Kind, e.Seq)
+		return &NewerEventError{Seq: e.Seq, Kind: e.Kind,
+			Detail: fmt.Sprintf("unknown event kind %q", e.Kind)}
 	}
 	return nil
 }

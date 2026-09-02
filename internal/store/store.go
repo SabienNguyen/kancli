@@ -372,9 +372,14 @@ func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
 // replayError words a replay failure. Data from a newer build gets advice
 // instead of a bare parse error.
 func replayError(path string, err error) error {
+	var newer *board.NewerEventError
+	if errors.As(err, &newer) {
+		return fmt.Errorf("%s was %w; upgrade kancli to the version that wrote it (or newer) and try again (event %d: %s)",
+			path, board.ErrNewerEvents, newer.Seq, newer.Detail)
+	}
 	if errors.Is(err, board.ErrNewerEvents) {
-		return fmt.Errorf("%s was %w; upgrade kancli to the version that wrote it (or newer) and try again: %v",
-			path, board.ErrNewerEvents, err)
+		return fmt.Errorf("%s was %w; upgrade kancli to the version that wrote it (or newer) and try again",
+			path, board.ErrNewerEvents)
 	}
 	return fmt.Errorf("replay %s: %w", path, err)
 }

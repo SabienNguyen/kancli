@@ -195,9 +195,13 @@ func TestStoreWritesEventVersionAndRefusesNewer(t *testing.T) {
 	if !errors.Is(err, board.ErrNewerEvents) {
 		t.Fatalf("err = %v, want ErrNewerEvents", err)
 	}
-	for _, want := range []string{"task.teleported", "upgrade kancli", st.LogPath()} {
+	for _, want := range []string{"task.teleported", "upgrade kancli", "event 99", st.LogPath()} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q: %v", want, err)
 		}
+	}
+	// The advice is worded once, not once per wrapping layer.
+	if n := strings.Count(err.Error(), "written by a newer kancli"); n != 1 {
+		t.Errorf("advice appears %d times, want 1: %v", n, err)
 	}
 }
