@@ -28,9 +28,10 @@ func ColName(b *Board, id string) string {
 	return id
 }
 
-// today returns the current local date at midnight.
+// Today returns the current local date at midnight, from the same clock
+// as Now so tests and demo data can freeze it.
 func Today() time.Time {
-	y, m, d := time.Now().Date()
+	y, m, d := Now().Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.Local)
 }
 

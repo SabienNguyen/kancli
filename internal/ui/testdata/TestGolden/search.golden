@@ -1,11 +1,11 @@
- Kancli · Demo                                                                        demo mode · changes are not saved 
+ Kancli · Demo                                              1 overdue · 1 due today · demo mode · changes are not saved 
  / p:high  1 match  esc clears                                                                                          
 ╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
 │    To Do 4                           ││    In Progress 2/2                   ││    Done 2                            │
 │                                      ││                                      ││                                      │
 │ │ #1 ↑ Write the release notes       ││   No tasks.                          ││   No tasks.                          │
 │ │ Cover the new search syntax, undo… ││                                      ││                                      │
-│ │ Sep 3 · @sam · +docs · ☑ 1/3 · 1 … ││                                      ││                                      │
+│ │ tomorrow · @sam · +docs · ☑ 1/3 ·… ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
