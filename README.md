@@ -290,6 +290,10 @@ kancli export -o tasks.parquet    # via DuckDB; -events for the log
 kancli import tasks.csv           # or .md, .json
 kancli boards new Work            # boards use|rename|rm
 kancli columns
+kancli columns add Review --wip 2 # add a column at the right
+kancli columns edit review --name QA --color 99
+kancli columns move qa 2          # left | right | first | last | position
+kancli columns rm qa --to done    # delete; without --to the tasks go left
 kancli compact                    # fold the event log into a snapshot
 kancli config                     # where the config file lives
 kancli keys                       # configurable actions

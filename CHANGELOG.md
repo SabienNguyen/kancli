@@ -9,6 +9,10 @@
   and an older kancli refuses to open a newer log with advice to upgrade;
   renamed config keys keep working with a warning. Frozen fixtures of every
   released data format are loaded by the test suite.
+- Columns from the command line: `kancli columns add | edit | rename |
+  move | rm`, with completion of column names and palette colours.
+- The full help (`?`) wraps to the terminal width, so the column keys and
+  `?`/`q` are no longer cut off on narrower terminals.
 - The command line is built on Cobra: grouped `kancli --help`, per-command
   help and examples, `kancli completion bash|zsh|fish|powershell` with
   completion of task ids, column and board names, and `--long` flags. The
