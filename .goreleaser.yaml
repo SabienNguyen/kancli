@@ -11,7 +11,7 @@ before:
 
 builds:
   - id: kancli
-    main: .
+    main: ./cmd/kancli
     binary: kancli
     env:
       - CGO_ENABLED=0

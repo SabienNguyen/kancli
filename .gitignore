@@ -1,5 +1,6 @@
 kancli
 kancli.exe
+/cmd/kancli/kancli
 .DS_Store
 debug.log
 dist/
