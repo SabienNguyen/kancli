@@ -27,8 +27,8 @@
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
- ↑/k up                    n       new task    H/⇧← move left     u undo                C      add column     …         
- ↓/j down                  enter/v view        L/⇧→ move right    U redo                E      edit column              
+ ↑/k up                    n       new task    H/⇧← move left     u undo                C      add column        ? help 
+ ↓/j down                  enter/v view        L/⇧→ move right    U redo                E      edit column       q quit 
  ←/h prev column           e       edit        K/⇧↑ move up       b boards              D      delete column            
  →/l next column           d       delete      J/⇧↓ move down     z archived tasks      <      column left              
  1-9 jump to column        a       archive     /    search        Z archive all done    >      column right             

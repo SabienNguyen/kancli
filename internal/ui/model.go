@@ -1768,5 +1768,14 @@ func (m App) headerView() string {
 
 func (m App) footerView() string {
 	inner := max(1, m.width-m.st.help.GetHorizontalFrameSize())
-	return m.st.help.Render(lipgloss.NewStyle().MaxWidth(inner).Render(m.help.View(m.keys)))
+	var body string
+	if m.help.ShowAll {
+		// Leave at least half of the screen to the board; the columns do not
+		// shrink below about eight rows, so a larger share overflows 18-row
+		// terminals.
+		body = fullHelp(m.keys.FullHelp(), inner, max(3, m.height/2), m.help.Styles.FullKey, m.help.Styles.FullDesc, m.help.Styles.Ellipsis)
+	} else {
+		body = m.help.View(m.keys)
+	}
+	return m.st.help.Render(lipgloss.NewStyle().MaxWidth(inner).Render(body))
 }
