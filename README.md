@@ -61,55 +61,36 @@ files on your machine; there is no server or account.
 
 ## Install
 
-Pick whichever fits. All of them put a single `kancli` binary on your `PATH`,
-so you can run it from any directory; your board lives in your data
-directory (see [Storage and files](#storage-and-files)), never in the
-directory you happen to be in.
-
-**With Go (any platform):**
-
-```sh
-go install github.com/SabienNguyen/kancli/cmd/kancli@latest
-```
-
-Go 1.25 or newer is needed; older Go versions download it automatically.
-The binary lands in `$(go env GOPATH)/bin`, which is usually already on
-your `PATH`.
-
-**With the install script (Linux, macOS, FreeBSD):**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/SabienNguyen/kancli/main/install.sh | sh
-```
-
-It downloads the release binary for your platform into `~/.local/bin`, or
-builds it with `go install` when no release matches. Set `KANCLI_BINDIR` to
-choose another directory.
-
-**On Windows:**
-
-```powershell
-irm https://raw.githubusercontent.com/SabienNguyen/kancli/main/install.ps1 | iex
-```
-
-**From a clone:**
+Clone it and run the install script. It builds the binary and puts it in
+`~/.local/bin`, so `kancli` works from any directory. Your board lives in
+your data directory (see [Storage and files](#storage-and-files)), never in
+the directory you happen to be in.
 
 ```sh
 git clone https://github.com/SabienNguyen/kancli.git
 cd kancli
-make install        # builds and copies kancli to ~/.local/bin
-kancli -demo        # sample board with three weeks of history, nothing is saved
-kancli              # your own board
+./install.sh          # add --path to append ~/.local/bin to your shell startup file
+kancli -demo          # sample board with three weeks of history, nothing is saved
+kancli                # your own board
 ```
 
-`make` targets: `build`, `install`, `uninstall`, `run`, `demo`, `test`,
-`lint`, `release-snapshot`. Without make: `go build ./cmd/kancli`.
+On Windows, run `.\install.ps1` in PowerShell instead; it installs to
+`%LOCALAPPDATA%\kancli\bin` and adds it to your PATH.
 
-Release archives for Linux, macOS, Windows and FreeBSD are attached to
-tagged versions on the
-[releases page](https://github.com/SabienNguyen/kancli/releases). The
-`duckdb` command-line tool is optional; it enables `kancli stats -q` and
-Parquet export. Everything else is pure Go.
+The only requirement is Go (`brew install go`, `winget install GoLang.Go`,
+or [go.dev/dl](https://go.dev/dl/)). If your Go is older than the version
+in `go.mod`, Go downloads the right toolchain by itself. To update later,
+`git pull && ./install.sh`.
+
+Other ways in, if you prefer them:
+
+- `make install` does the same as the script; `make build`, `run`, `demo`,
+  `test` and `lint` are there too.
+- `go install github.com/SabienNguyen/kancli/cmd/kancli@latest` installs
+  straight from GitHub into `$(go env GOPATH)/bin` without a clone.
+
+The `duckdb` command-line tool is optional; it enables `kancli stats -q`
+and Parquet export. Everything else is pure Go.
 
 ## The board
 
