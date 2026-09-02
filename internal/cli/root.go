@@ -561,14 +561,87 @@ func (c *cli) boardsCmd() *cobra.Command {
 }
 
 func (c *cli) columnsCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "columns",
 		Aliases: []string{"cols"},
-		Short:   "List the columns of the board",
+		Short:   "List the columns of the board, or manage them with add, edit, rename, move and rm",
 		GroupID: groupBoards,
 		Args:    cobra.NoArgs,
 		RunE:    c.wrap("columns", func(*cobra.Command, []string) error { return c.columns() }),
 	}
+
+	var addColor string
+	var addWIP int
+	add := &cobra.Command{
+		Use:     "add <name...>",
+		Aliases: []string{"new"},
+		Short:   "Add a column at the right",
+		Args:    cobra.MinimumNArgs(1),
+		Example: "  kancli columns add Review --wip 2\n  kancli columns add \"Code Review\" --color 99",
+		RunE: c.wrap("columns add", func(_ *cobra.Command, args []string) error {
+			return c.columnsAdd(strings.Join(args, " "), addColor, addWIP)
+		}),
+	}
+	add.Flags().StringVar(&addColor, "color", "", "ANSI colour code, e.g. 62 or 214 (default: next palette colour)")
+	add.Flags().IntVar(&addWIP, "wip", 0, "work-in-progress limit shown in the header (0 = none)")
+	_ = add.RegisterFlagCompletionFunc("color", fixed(board.ColumnPalette...))
+
+	var editName, editColor string
+	var editWIP int
+	edit := &cobra.Command{
+		Use:               "edit <column>",
+		Short:             "Change a column's name, colour or WIP limit",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: positional(c.completeColumns),
+		Example:           "  kancli columns edit review --name QA\n  kancli columns edit todo --wip 5",
+		RunE: c.wrap("columns edit", func(cmd *cobra.Command, args []string) error {
+			return c.columnsEdit(args[0], editName, editColor, editWIP, cmd.Flags().Changed("wip"))
+		}),
+	}
+	edit.Flags().StringVar(&editName, "name", "", "new name")
+	edit.Flags().StringVar(&editColor, "color", "", "ANSI colour code")
+	edit.Flags().IntVar(&editWIP, "wip", 0, "work-in-progress limit (0 = none)")
+	_ = edit.RegisterFlagCompletionFunc("color", fixed(board.ColumnPalette...))
+
+	rename := &cobra.Command{
+		Use:               "rename <column> <new name...>",
+		Short:             "Rename a column",
+		Args:              cobra.MinimumNArgs(2),
+		ValidArgsFunction: positional(c.completeColumns),
+		RunE: c.wrap("columns rename", func(_ *cobra.Command, args []string) error {
+			return c.columnsEdit(args[0], strings.Join(args[1:], " "), "", 0, false)
+		}),
+	}
+
+	move := &cobra.Command{
+		Use:               "move <column> <left|right|first|last|position>",
+		Aliases:           []string{"mv"},
+		Short:             "Move a column one step, to an end, or to a 1-based position",
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: positional(c.completeColumns, fixed("left", "right", "first", "last")),
+		Example:           "  kancli columns move review left\n  kancli columns move qa 2",
+		RunE: c.wrap("columns move", func(_ *cobra.Command, args []string) error {
+			return c.columnsMove(args[0], args[1])
+		}),
+	}
+
+	var rmTo string
+	rm := &cobra.Command{
+		Use:               "rm <column>",
+		Aliases:           []string{"delete"},
+		Short:             "Delete a column and move its tasks to another",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: positional(c.completeColumns),
+		Example:           "  kancli columns rm review --to done",
+		RunE: c.wrap("columns rm", func(_ *cobra.Command, args []string) error {
+			return c.columnsRemove(args[0], rmTo)
+		}),
+	}
+	rm.Flags().StringVar(&rmTo, "to", "", "column that receives the tasks (default: the neighbour)")
+	_ = rm.RegisterFlagCompletionFunc("to", c.completeColumns)
+
+	cmd.AddCommand(add, edit, rename, move, rm)
+	return cmd
 }
 
 // --- setup ------------------------------------------------------------------

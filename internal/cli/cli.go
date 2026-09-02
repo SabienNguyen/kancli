@@ -1185,6 +1185,149 @@ func (c *cli) columns() error {
 	return tw.Flush()
 }
 
+func (c *cli) columnsAdd(name, color string, wip int) error {
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	col, err := b.AddColumn(name, color, wip)
+	if err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Added column %q (%s)\n", col.Name, col.ID)
+	return nil
+}
+
+// columnsEdit changes only what was given: an empty name or colour keeps
+// the current one, and wip is applied only when wipSet is true so that
+// "--wip 0" can clear a limit.
+func (c *cli) columnsEdit(key, name, color string, wip int, wipSet bool) error {
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	col := b.Column(key)
+	if col == nil {
+		return fmt.Errorf("no column %q (see `kancli columns`)", key)
+	}
+	old := *col
+	if name == "" {
+		name = col.Name
+	}
+	if color == "" {
+		color = col.Color
+	}
+	if !wipSet {
+		wip = col.WIPLimit
+	}
+	if err := b.UpdateColumn(col.ID, name, color, wip); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	if name != old.Name && color == old.Color && wip == old.WIPLimit {
+		fmt.Fprintf(c.stdout, "Renamed column %q to %q\n", old.Name, name)
+	} else {
+		fmt.Fprintf(c.stdout, "Updated column %q (%s)\n", name, old.ID)
+	}
+	return nil
+}
+
+func (c *cli) columnsMove(key, where string) error {
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	col := b.Column(key)
+	if col == nil {
+		return fmt.Errorf("no column %q (see `kancli columns`)", key)
+	}
+	// col points into b.Columns, which MoveColumn reorders, so copy first.
+	id, name := col.ID, col.Name
+	n := len(b.Columns)
+	from := b.ColumnIndex(id)
+	var to int
+	switch strings.ToLower(where) {
+	case "left":
+		to = from - 1
+	case "right":
+		to = from + 1
+	case "first":
+		to = 0
+	case "last":
+		to = n - 1
+	default:
+		pos, err := strconv.Atoi(where)
+		if err != nil || pos < 1 || pos > n {
+			return fmt.Errorf("position must be left, right, first, last or a number from 1 to %d", n)
+		}
+		to = pos - 1
+	}
+	if to < 0 || to >= n {
+		return fmt.Errorf("column %q is already at that end", name)
+	}
+	step := 1
+	if to < from {
+		step = -1
+	}
+	for i := from; i != to; i += step {
+		if !b.MoveColumn(id, step) {
+			return fmt.Errorf("cannot move column %q", name)
+		}
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Moved column %q to position %d\n", name, to+1)
+	return nil
+}
+
+func (c *cli) columnsRemove(key, to string) error {
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	col := b.Column(key)
+	if col == nil {
+		return fmt.Errorf("no column %q (see `kancli columns`)", key)
+	}
+	// col points into b.Columns, which RemoveColumn cuts, so copy first.
+	id, name := col.ID, col.Name
+	moveTo := ""
+	if to != "" {
+		dest := b.Column(to)
+		if dest == nil {
+			return fmt.Errorf("no column %q to move tasks to (see `kancli columns`)", to)
+		}
+		moveTo = dest.ID
+	} else if i := b.ColumnIndex(id); len(b.Columns) > 1 {
+		// board.RemoveColumn drops the tasks when no destination is given,
+		// so pick the neighbour here: the one to the left, else the right.
+		if i > 0 {
+			moveTo = b.Columns[i-1].ID
+		} else {
+			moveTo = b.Columns[i+1].ID
+		}
+	}
+	moved := b.AllIn(id)
+	if err := b.RemoveColumn(id, moveTo); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	if moved == 0 {
+		fmt.Fprintf(c.stdout, "Removed column %q\n", name)
+		return nil
+	}
+	fmt.Fprintf(c.stdout, "Removed column %q; %d task%s moved to %s\n", name, moved, board.Plural(moved), board.ColName(b, moveTo))
+	return nil
+}
+
 func (c *cli) config() error {
 	path := c.env.Opts.configPath
 	if path == "" {

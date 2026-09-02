@@ -372,3 +372,73 @@ func TestCLILinks(t *testing.T) {
 		t.Errorf("log:\n%s", out)
 	}
 }
+
+func TestCLIColumnsManage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	runCLI(t, path, "add", "one")
+	runCLI(t, path, "add", "-c", "done", "two")
+
+	out, errs, code := runCLI(t, path, "columns", "add", "Review", "--wip", "2", "--color", "99")
+	if code != 0 || !strings.Contains(out, `Added column "Review" (review)`) {
+		t.Fatalf("columns add: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "columns")
+	if !strings.Contains(out, "review") || !strings.Contains(out, "99") {
+		t.Errorf("new column missing from list:\n%s", out)
+	}
+	if _, errs, code := runCLI(t, path, "columns", "add", "review"); code == 0 || !strings.Contains(errs, "already exists") {
+		t.Errorf("duplicate name should fail: %d %q", code, errs)
+	}
+
+	out, errs, code = runCLI(t, path, "columns", "edit", "review", "--name", "QA", "--wip", "0")
+	if code != 0 || !strings.Contains(out, `Updated column "QA" (review)`) {
+		t.Fatalf("columns edit: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "columns")
+	if !strings.Contains(out, "QA") || strings.Contains(out, "Review") {
+		t.Errorf("edit not applied:\n%s", out)
+	}
+
+	out, errs, code = runCLI(t, path, "columns", "rename", "qa", "Code", "Review")
+	if code != 0 || !strings.Contains(out, `Renamed column "QA" to "Code Review"`) {
+		t.Fatalf("columns rename: %d %q %q", code, out, errs)
+	}
+
+	// Positions: To Do, In Progress, Done, Code Review -> move to 2, then first, then right.
+	out, errs, code = runCLI(t, path, "columns", "move", "review", "2")
+	if code != 0 || !strings.Contains(out, `Moved column "Code Review" to position 2`) {
+		t.Fatalf("columns move: %d %q %q", code, out, errs)
+	}
+	runCLI(t, path, "columns", "move", "review", "first")
+	runCLI(t, path, "columns", "move", "review", "right")
+	out, _, _ = runCLI(t, path, "columns")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 5 || !strings.HasPrefix(lines[2], "review") {
+		t.Errorf("after moves, want review second:\n%s", out)
+	}
+	if _, errs, code := runCLI(t, path, "columns", "move", "review", "9"); code == 0 || !strings.Contains(errs, "1 to 4") {
+		t.Errorf("out-of-range position should fail: %d %q", code, errs)
+	}
+	if _, errs, code := runCLI(t, path, "columns", "move", "review", "sideways"); code == 0 || !strings.Contains(errs, "left, right, first, last") {
+		t.Errorf("bad direction should fail: %d %q", code, errs)
+	}
+
+	// Removing "done" moves its task somewhere explicit.
+	out, errs, code = runCLI(t, path, "columns", "rm", "done", "--to", "review")
+	if code != 0 || !strings.Contains(out, `Removed column "Done"; 1 task moved to Code Review`) {
+		t.Fatalf("columns rm: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "list")
+	if !strings.Contains(out, "two") || !strings.Contains(out, "Code Review") {
+		t.Errorf("task should now sit in Code Review:\n%s", out)
+	}
+	if _, errs, code := runCLI(t, path, "columns", "rm", "nope"); code == 0 || !strings.Contains(errs, `no column "nope"`) {
+		t.Errorf("unknown column should fail: %d %q", code, errs)
+	}
+	for _, id := range []string{"review", "in_progress"} {
+		runCLI(t, path, "columns", "rm", id)
+	}
+	if _, errs, code := runCLI(t, path, "columns", "rm", "todo"); code == 0 || !strings.Contains(errs, "only column") {
+		t.Errorf("last column must stay: %d %q", code, errs)
+	}
+}
