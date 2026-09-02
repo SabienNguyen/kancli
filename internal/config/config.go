@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/SabienNguyen/kancli/internal/board"
 )
@@ -34,7 +35,15 @@ type Config struct {
 	Sort string `json:"sort,omitempty"`
 	// Keys overrides key bindings, keyed by action name (see `kancli keys`).
 	Keys map[string][]string `json:"keys,omitempty"`
+	// Warnings is advice about the file, for stderr.
+	Warnings []string `json:"-"` // advice about the file, for stderr
 }
+
+// renamedKeys maps a key from an older release to its current name. A
+// file that still uses the old key is read as if it used the new one and
+// gets a warning. Add a row here whenever a key is renamed; never delete
+// rows.
+var renamedKeys = map[string]string{}
 
 // defaultConfigPath is $KANCLI_CONFIG, else kancli/config.json under
 // $XDG_CONFIG_HOME or the OS config dir.
@@ -66,7 +75,26 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := json.Unmarshal(data, &c); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return c, fmt.Errorf("parse %s: %w", path, err)
+	}
+	for old, now := range renamedKeys {
+		v, ok := raw[old]
+		if !ok {
+			continue
+		}
+		if _, exists := raw[now]; !exists {
+			raw[now] = v
+		}
+		c.Warnings = append(c.Warnings, fmt.Sprintf("%s: %q is now called %q; rename it", path, old, now))
+	}
+	sort.Strings(c.Warnings)
+	fixed, err := json.Marshal(raw)
+	if err != nil {
+		return c, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if err := json.Unmarshal(fixed, &c); err != nil {
 		return c, fmt.Errorf("parse %s: %w", path, err)
 	}
 	switch c.Images {
