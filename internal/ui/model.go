@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/SabienNguyen/kancli/internal/board"
 	"github.com/SabienNguyen/kancli/internal/config"
 	"github.com/SabienNguyen/kancli/internal/desktop"
+	"github.com/SabienNguyen/kancli/internal/kitty"
 	"github.com/SabienNguyen/kancli/internal/store"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -97,6 +99,10 @@ type App struct {
 
 	readOnly bool
 	asOf     time.Time
+
+	anim    *cardAnim // card in flight, if any
+	animGen int       // counts animations so stale frame ticks are ignored
+	images  bool      // the terminal can show image attachments inline
 }
 
 // New builds the root model for a loaded data file.
@@ -121,6 +127,7 @@ func New(cfg config.Config, st Styles, g Glyphs, s *store.Store, file *board.Fil
 		search:  search,
 		marks:   map[int]bool{},
 		compact: cfg.Compact,
+		images:  cfg.Images != "off" && (cfg.Images == "on" || kitty.Supported(os.Getenv)),
 	}
 	if s, ok := board.ParseSortMode(cfg.Sort); ok {
 		m.sortMode = s
@@ -203,6 +210,9 @@ func (m *App) refresh() tea.Cmd {
 			board.SortTasks(tasks, m.sortMode)
 		}
 		d := cardDelegate{st: m.st, g: m.g, compact: m.compact, marks: m.marks, now: now, board: m.board}
+		if m.anim != nil {
+			d.hidden = m.anim.taskID
+		}
 		m.cols[i].configure(col, m.board.CountIn(col.ID), m.board.WIPExceeded(col.ID), d)
 		cmds = append(cmds, m.cols[i].setTasks(tasks))
 	}
@@ -465,6 +475,17 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = ""
 		}
 		return m, nil
+
+	case animMsg:
+		if m.anim == nil || msg.gen != m.anim.gen {
+			return m, nil
+		}
+		if m.anim.step() {
+			m.anim = nil
+			m.refresh()
+			return m, nil
+		}
+		return m, animTick(msg.gen)
 
 	case pollMsg:
 		if m.store.ChangedOnDisk() && !m.readOnly && m.state == stateBoard {
@@ -909,7 +930,7 @@ func (m App) openEditor(t board.Task, back viewState) (tea.Model, tea.Cmd) {
 }
 
 func (m App) openDetail(id int) (tea.Model, tea.Cmd) {
-	m.detail = newDetailView(id, m.st, m.g)
+	m.detail = newDetailView(id, m.st, m.g, m.images)
 	m.detail.setSize(m.width, m.height)
 	m.renderDetail()
 	m.state = stateDetail
@@ -958,6 +979,10 @@ func (m App) moveTargets(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmds []tea.Cmd
+	fx, fy, fromOK := 0, 0, false
+	if len(ids) == 1 {
+		fx, fy, fromOK = m.cardPos(m.focused, ids[0])
+	}
 	m.snapshot()
 	moved := 0
 	var lastCol *board.Column
@@ -993,6 +1018,9 @@ func (m App) moveTargets(delta int) (tea.Model, tea.Cmd) {
 	}
 	m.marks = map[int]bool{}
 	cmds = append(cmds, m.changed("Moved %s to %s", describeTargets(&m, ids), lastCol.Name))
+	if len(ids) == 1 && fromOK && m.state == stateBoard {
+		cmds = append(cmds, m.startAnim(ids[0], m.board.ColumnIndex(lastCol.ID), fx, fy))
+	}
 	if m.board.WIPExceeded(lastCol.ID) {
 		cmds = append(cmds, m.setStatus("%s is over its WIP limit (%d/%d)", lastCol.Name, m.board.CountIn(lastCol.ID), lastCol.WIPLimit))
 	}
@@ -1063,13 +1091,18 @@ func (m App) reorderSelected(delta int) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	fx, fy, fromOK := m.cardPos(m.focused, t.ID)
 	m.snapshot()
 	if !m.board.ReorderTask(t.ID, delta) {
 		m.dropSnapshot()
 		return m, nil
 	}
 	m.col().selectedID = t.ID
-	return m, m.changed("")
+	cmd := m.changed("")
+	if fromOK {
+		cmd = tea.Batch(cmd, m.startAnim(t.ID, m.focused, fx, fy))
+	}
+	return m, cmd
 }
 
 func (m App) moveColumn(delta int) (tea.Model, tea.Cmd) {
@@ -1635,7 +1668,12 @@ func (m App) View() string {
 	if len(m.cols) == 0 {
 		board = center(m.st.muted.Render("No columns. Press C to add one."))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), board, m.footerView())
+	view := lipgloss.JoinVertical(lipgloss.Left, m.headerView(), board, m.footerView())
+	if m.anim != nil {
+		x, y := m.anim.pos()
+		view = overlay(view, m.anim.ghost, x, y)
+	}
+	return view
 }
 
 // dueSummary counts overdue and due-today tasks for the header badge.

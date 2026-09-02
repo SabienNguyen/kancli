@@ -1,0 +1,36 @@
+ Kancli · Demo                                              1 overdue · 1 due today · demo mode · changes are not saved 
+╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
+│    To Do 4                           ││    In Progress 2/2                   ││    Done 2                            │
+│                                      ││                                      ││                                      │
+│ │ #1 ↑ Write the release notes       ││ │ #5 ‼ Ship the CLI subcommands      ││ │ #7 Upgrade to Bubble Tea v1        │
+│ │ tomorrow · @sam · +docs · ☑ 1/3 ·… ││ │ today · @sam · +feature · 1 comme… ││ │ +chore                             │
+│                                      ││                                      ││                                      │
+│   #2 • Fix the flaky terminal resiz… ││   #6 • Review the mouse support PR   ││   #8 ↓ Stay cool                     │
+│   2d overdue · +bug · +tests         ││   in 3d · @alex · +review            ││   as a cucumber                      │
+│                                      ││                                      ││                                      │
+│   #3 Buy milk                        ││                                      ││                                      │
+│   +home                              ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│   #4 ↓ Plan the team offsite         ││                                      ││                                      │
+│   Sep 14 · @alex · +planning         ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+ n new task • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit                             

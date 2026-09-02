@@ -1,0 +1,36 @@
+ Kancli · Demo  2 marked                                    1 overdue · 1 due today · demo mode · changes are not saved 
+╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
+│    To Do 4                           ││    In Progress 2/2                   ││    Done 2                            │
+│                                      ││                                      ││                                      │
+│   ✓ #1 ↑ Write the release notes     ││ │ #5 ‼ Ship the CLI subcommands      ││ │ #7 Upgrade to Bubble Tea v1        │
+│   Cover the new search syntax, undo… ││ │ add, list, move, done, export and… ││ │                                    │
+│   tomorrow · @sam · +docs · ☑ 1/3 ·… ││ │ today · @sam · +feature · 1 comme… ││ │ +chore                             │
+│                                      ││                                      ││                                      │
+│   #2 • Fix the flaky terminal resiz… ││   #6 • Review the mouse support PR   ││   #8 ↓ Stay cool                     │
+│                                      ││                                      ││   as a cucumber                      │
+│   2d overdue · +bug · +tests         ││   in 3d · @alex · +review            ││                                      │
+│                                      ││                                      ││                                      │
+│   ✓ #3 Buy milk                      ││                                      ││                                      │
+│   strawberry milk                    ││                                      ││                                      │
+│   +home                              ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│ │ #4 ↓ Plan the team offsite         ││                                      ││                                      │
+│ │ Venue, agenda and travel.          ││                                      ││                                      │
+│ │ Sep 14 · @alex · +planning         ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+ n new task • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit                             

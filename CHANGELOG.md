@@ -4,6 +4,29 @@
 
 ### Added
 
+- The command line is built on Cobra: grouped `kancli --help`, per-command
+  help and examples, `kancli completion bash|zsh|fish|powershell` with
+  completion of task ids, column and board names, and `--long` flags. The
+  old single-dash spellings (`-json`, `-as-of`) still work.
+- Task descriptions are Markdown, rendered with Glamour in the task view:
+  headings, lists, emphasis, code and links.
+- Cards slide to their new column when moved, driven by a Harmonica spring.
+  `--no-animations` or `"no_animations": true` turns it off.
+- Image attachments (png, jpg, gif) are previewed inline in the task view on
+  terminals that speak the kitty graphics protocol (kitty, Ghostty).
+  `"images": "off"` disables it, `"on"` forces it.
+- Golden-file tests of every screen with teatest, and a property-based test
+  (rapid) that replays random mutation sequences through the event log.
+
+### Fixed
+
+- Replayed events now reproduce the live state exactly: an event carries the
+  same timestamp the mutation wrote into the task, and links created from
+  `#12` mentions are restored from their own events during replay.
+- Deleting a column and moving its tasks to a column further right logged
+  the wrong destination, so history and other processes saw the tasks in
+  the wrong column. Found by the new property test.
+
 - Links between tasks: blocks / blocked by, subtask / parent, relates to.
   Blocked marker on cards and in the header, subtask progress on parents,
   automatic links from `#12` mentions, a warning when finishing a task with

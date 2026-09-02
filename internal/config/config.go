@@ -23,6 +23,12 @@ type Config struct {
 	ASCII bool `json:"ascii,omitempty"`
 	// Compact shows two-line cards instead of three-line ones.
 	Compact bool `json:"compact,omitempty"`
+	// NoAnimations turns off the card animation when a task moves.
+	NoAnimations bool `json:"no_animations,omitempty"`
+	// Images controls inline previews of image attachments in terminals
+	// that support the kitty graphics protocol: "auto" (default), "on" to
+	// force them, or "off".
+	Images string `json:"images,omitempty"`
 	// Sort is the initial sort mode: manual, priority, due, created,
 	// updated or title.
 	Sort string `json:"sort,omitempty"`
@@ -63,6 +69,11 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return c, fmt.Errorf("parse %s: %w", path, err)
 	}
+	switch c.Images {
+	case "", "auto", "on", "off":
+	default:
+		return c, fmt.Errorf("%s: images must be \"auto\", \"on\" or \"off\", not %q", path, c.Images)
+	}
 	if c.Sort != "" {
 		if _, ok := board.ParseSortMode(c.Sort); !ok {
 			return c, fmt.Errorf("%s: unknown sort %q", path, c.Sort)
@@ -100,6 +111,8 @@ const Example = `{
   "ascii": false,
   "compact": false,
   "sort": "manual",
+  "no_animations": false,
+  "images": "auto",
   "keys": {
     "quit": ["q", "ctrl+c"],
     "new": ["n"]

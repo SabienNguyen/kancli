@@ -91,18 +91,32 @@ func (f *File) emit(e Event) {
 	f.rec.events = append(f.rec.events, e)
 }
 
+// now reads the clock and remembers the reading for the event the current
+// mutation is about to emit.
 func (b *Board) now() time.Time {
+	t := Now()
 	if b.clock != nil {
-		return b.clock()
+		t = b.clock()
 	}
-	return Now()
+	b.stamp = t
+	return t
 }
 
+// emit records an event at the time of the mutation that produced it: the
+// last now() reading when there was one, otherwise a fresh one. Reusing
+// the reading matters because replay uses the event time as "now", and the
+// replayed task must end up byte-for-byte identical to the original.
 func (b *Board) emit(e Event) {
+	at := b.stamp
+	b.stamp = time.Time{}
 	if b.rec == nil || b.rec.muted {
 		return
 	}
-	e.At = b.now()
+	if at.IsZero() {
+		at = b.now()
+		b.stamp = time.Time{}
+	}
+	e.At = at
 	e.Board = b.ID
 	e.Actor = b.rec.actor
 	b.rec.events = append(b.rec.events, e)

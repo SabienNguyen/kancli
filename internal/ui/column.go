@@ -31,6 +31,7 @@ type cardDelegate struct {
 	marks   map[int]bool
 	now     time.Time
 	board   *board.Board
+	hidden  int // task drawn by the animation overlay instead
 }
 
 func (d cardDelegate) Height() int {
@@ -54,6 +55,11 @@ func (d cardDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	th := d.st.th
 	width := m.Width()
 	if width <= 0 {
+		return
+	}
+	if d.hidden != 0 && t.ID == d.hidden {
+		// The card is in flight; leave its slot empty.
+		fmt.Fprint(w, strings.Repeat("\n", d.Height()-1))
 		return
 	}
 	selected := index == m.Index()
@@ -103,14 +109,14 @@ func (d cardDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 	var lines []string
 	lines = append(lines, line1)
 	if !d.compact {
-		desc := t.FirstLine()
+		desc := plainText(t.FirstLine())
 		lines = append(lines, descStyle.Render(ansi.Truncate(desc, inner, d.g.ellipsis)))
 	}
 
 	// Meta line: due, assignee, labels, checklist, attachments, comments.
 	meta := d.metaLine(t, inner)
 	if d.compact && meta == "" {
-		meta = descStyle.Render(ansi.Truncate(t.FirstLine(), inner, d.g.ellipsis))
+		meta = descStyle.Render(ansi.Truncate(plainText(t.FirstLine()), inner, d.g.ellipsis))
 	} else {
 		meta = descStyle.Render(meta)
 	}
@@ -315,6 +321,19 @@ func (c *column) scroll(delta int) {
 		c.list.CursorDown()
 	}
 	c.remember()
+}
+
+// rowOf is the inverse of cardAt: the row inside the column (0 = top
+// border) where the visible card idx starts, if it is on the current page.
+func (c column) rowOf(idx int) (int, bool) {
+	s := c.style()
+	top := s.GetVerticalFrameSize()/2 + lipgloss.Height(c.list.Styles.Title.Render("x")) + c.list.Styles.TitleBar.GetVerticalPadding()
+	perPage := c.list.Paginator.PerPage
+	page := c.list.Paginator.Page
+	if perPage <= 0 || idx < page*perPage || idx >= (page+1)*perPage || idx >= c.count() {
+		return 0, false
+	}
+	return top + (idx-page*perPage)*c.rows, true
 }
 
 // cardAt maps a row inside the column (0 = top border) to the visible card

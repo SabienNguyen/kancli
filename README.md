@@ -60,8 +60,12 @@ files on your machine; there is no server or account.
 - **Safe with other processes**: the app, scripts and cron jobs can all
   write at once; changes are merged, never overwritten.
 - **DuckDB bridge** for ad-hoc SQL over tasks and events, and Parquet export.
-- **Themes** (default, high-contrast, mono), ASCII borders, compact cards
-  and configurable keys.
+- **Markdown** task descriptions, rendered in the task view. **Image
+  attachments** are previewed inline in kitty and Ghostty.
+- **Themes** (default, high-contrast, mono), ASCII borders, compact cards,
+  configurable keys, and cards that slide when you move them.
+- **A real CLI**: grouped help, `--long` flags, and shell completion of
+  commands, task ids, column and board names.
 
 ## Install
 
@@ -107,7 +111,10 @@ kancli -as-of -7d         a week ago
 kancli -theme mono        no colours; also: high-contrast
 kancli -ascii             +-| borders for terminals without box drawing
 kancli -compact           two-line cards
+kancli --no-animations    cards jump instead of sliding
 ```
+
+Flags take one dash or two; `-as-of` and `--as-of` are the same thing.
 
 ### Keys
 
@@ -275,7 +282,18 @@ kancli columns
 kancli compact                    # fold the event log into a snapshot
 kancli config                     # where the config file lives
 kancli keys                       # configurable actions
-kancli -version
+kancli --version
+```
+
+`kancli --help` lists the commands by group and `kancli add --help` explains
+one of them with examples. Shell completion knows the commands, flags, task
+ids, column names and board names:
+
+```sh
+kancli completion zsh > "${fpath[1]}/_kancli"            # zsh
+kancli completion bash > /etc/bash_completion.d/kancli   # bash
+kancli completion fish > ~/.config/fish/completions/kancli.fish
+kancli completion powershell | Out-String | Invoke-Expression
 ```
 
 `kancli due -q` prints nothing and exits 1 when something is due, so it works
@@ -498,6 +516,8 @@ All keys are optional:
   "ascii": false,
   "compact": false,
   "sort": "manual",
+  "no_animations": false,
+  "images": "auto",
   "keys": {
     "quit": ["q", "ctrl+c"],
     "archive": ["x"],
@@ -508,7 +528,10 @@ All keys are optional:
 
 `theme` is `default`, `high-contrast` or `mono`. `NO_COLOR` in the environment
 disables colour too. `keys` maps an action (see `kancli keys`) to a list of
-keys; an empty list disables the action.
+keys; an empty list disables the action. `images` is `auto` (preview image
+attachments when the terminal is kitty or Ghostty and not inside tmux),
+`on` to force it in any terminal that implements the kitty graphics
+protocol with Unicode placeholders, or `off`.
 
 ## Development
 
@@ -520,9 +543,10 @@ internal/store/    snapshot + event log on disk, locking, compaction,
                    as-of loading, and the DuckDB bridge
 internal/ui/       the Bubble Tea app: board, forms, detail, stats screen,
                    pickers, themes and key maps
-internal/cli/      the non-interactive commands and environment setup
+internal/cli/      the Cobra command tree, completion and environment setup
 internal/config/   the config file
 internal/desktop/  opening links and desktop notifications
+internal/kitty/    inline images via the kitty graphics protocol
 docs/screenshots/  the images in this README
 ```
 
@@ -533,7 +557,25 @@ cover.
 ```sh
 make test           # go test -race ./...
 make lint           # gofmt, go vet, golangci-lint
+go test ./internal/ui -run TestGolden -update   # refresh the screen snapshots
 ```
+
+Three kinds of tests guard the code: unit tests next to each package,
+golden-file tests that drive the real program with
+[teatest](https://github.com/charmbracelet/x/tree/main/exp/teatest) and
+compare every screen against `internal/ui/testdata`, and a property-based
+test with [rapid](https://github.com/flyingmutant/rapid) that applies
+random sequences of every mutation and checks that replaying the event log
+reproduces the live state byte for byte.
+
+Libraries: [Bubble Tea](https://github.com/charmbracelet/bubbletea),
+[Bubbles](https://github.com/charmbracelet/bubbles) and
+[Lip Gloss](https://github.com/charmbracelet/lipgloss) for the UI,
+[Glamour](https://github.com/charmbracelet/glamour) for Markdown,
+[Harmonica](https://github.com/charmbracelet/harmonica) for the card
+animation, [Cobra](https://github.com/spf13/cobra) for the CLI,
+[ntcharts](https://github.com/NimbleMarkets/ntcharts) for the stats
+charts, and DuckDB (as an external binary) for SQL.
 
 CI runs the same on Linux, macOS and Windows. Pushing a tag like `v1.0.0`
 builds release binaries with GoReleaser (see `.goreleaser.yaml`, which also
