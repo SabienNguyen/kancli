@@ -124,6 +124,27 @@ func TestStoreFillsMissingFields(t *testing.T) {
 	}
 }
 
+func TestStoreReassignsDuplicateIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	data := `{"version": 1, "tasks": [
+		{"id": "same", "title": "first", "status": "todo"},
+		{"id": "same", "title": "second", "status": "todo"},
+		{"id": "other", "title": "third", "status": "done"}]}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := newStore(path).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].id != "same" || got[2].id != "other" {
+		t.Errorf("unique ids should be kept: %q, %q", got[0].id, got[2].id)
+	}
+	if got[1].id == "same" || got[1].id == "" {
+		t.Errorf("duplicate id was not reassigned: %q", got[1].id)
+	}
+}
+
 func TestDefaultStorePath(t *testing.T) {
 	t.Setenv("KANCLI_FILE", "/tmp/custom.json")
 	if p, err := defaultStorePath(); err != nil || p != "/tmp/custom.json" {

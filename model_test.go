@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,18 +115,6 @@ func titles(c column) []string {
 	return out
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestViewFitsTerminal(t *testing.T) {
 	m, _ := newTestBoard(t)
 	view := m.View()
@@ -141,6 +130,28 @@ func TestViewFitsTerminal(t *testing.T) {
 	for i, line := range lines {
 		if w := lipgloss.Width(line); w > testWidth {
 			t.Errorf("line %d is %d wide, terminal is %d", i, w, testWidth)
+		}
+	}
+}
+
+func TestFilteredViewFitsTerminal(t *testing.T) {
+	for _, size := range [][2]int{{60, 16}, {80, 24}, {100, 30}} {
+		m := newBoard(store{}, sampleTasks())
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = press(mm.(Board), "/")
+		m = typeText(m, "su")
+		m = press(m, "enter")
+		if !m.cols[todo].list.IsFiltered() {
+			t.Fatalf("%dx%d: filter was not applied", size[0], size[1])
+		}
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) > size[1] {
+			t.Errorf("%dx%d: filtered view has %d lines", size[0], size[1], len(lines))
+		}
+		for i, line := range lines {
+			if w := lipgloss.Width(line); w > size[0] {
+				t.Errorf("%dx%d: line %d is %d wide", size[0], size[1], i, w)
+			}
 		}
 	}
 }
@@ -198,10 +209,10 @@ func TestCursorMovement(t *testing.T) {
 func TestMoveTaskBetweenColumns(t *testing.T) {
 	m, st := newTestBoard(t)
 	m = press(m, "L")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"eat sushi", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "fold laundry"}) {
 		t.Errorf("To Do after move = %v", got)
 	}
-	if got := titles(m.cols[inProgress]); !equalStrings(got, []string{"write code", "buy milk"}) {
+	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk"}) {
 		t.Errorf("In Progress after move = %v", got)
 	}
 	moved := m.cols[inProgress].tasks()[1]
@@ -238,12 +249,12 @@ func TestMoveTaskBetweenColumns(t *testing.T) {
 	// Moving right from Done is a no-op too.
 	m = press(m, "3")
 	m = press(m, "shift+right")
-	if got := titles(m.cols[done]); !equalStrings(got, []string{"stay cool"}) {
+	if got := titles(m.cols[done]); !slices.Equal(got, []string{"stay cool"}) {
 		t.Errorf("Done changed on an impossible move: %v", got)
 	}
 	// And moving left from Done works.
 	m = press(m, "shift+left")
-	if got := titles(m.cols[inProgress]); !equalStrings(got, []string{"write code", "buy milk", "stay cool"}) {
+	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk", "stay cool"}) {
 		t.Errorf("In Progress after move left = %v", got)
 	}
 	if got := m.cols[done].count(); got != 0 {
@@ -255,19 +266,19 @@ func TestReorderWithinColumn(t *testing.T) {
 	m, st := newTestBoard(t)
 	first := m.cols[todo].tasks()[0]
 	m = press(m, "J")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"eat sushi", "buy milk", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "buy milk", "fold laundry"}) {
 		t.Errorf("after J order = %v", got)
 	}
 	if sel, _ := m.cols[todo].selected(); sel.id != first.id {
 		t.Error("cursor should follow the moved task")
 	}
 	m = press(m, "K")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
 		t.Errorf("after K order = %v", got)
 	}
 	// Moving the top task up is a no-op.
 	m = press(m, "K")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
 		t.Errorf("after K at top order = %v", got)
 	}
 
@@ -407,7 +418,7 @@ func TestDeleteTask(t *testing.T) {
 	}
 	m = press(m, "d")
 	m = press(m, "y")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"eat sushi", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "fold laundry"}) {
 		t.Errorf("after delete = %v", got)
 	}
 	if sel, ok := m.cols[todo].selected(); !ok || sel.title != "eat sushi" {
@@ -458,15 +469,15 @@ func TestFilterCapturesKeysAndMoves(t *testing.T) {
 	}
 	// Board actions use the visible selection, not the raw index.
 	m = press(m, "L")
-	if got := titles(m.cols[inProgress]); !equalStrings(got, []string{"write code", "eat sushi"}) {
+	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "eat sushi"}) {
 		t.Errorf("In Progress after filtered move = %v", got)
 	}
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"buy milk", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "fold laundry"}) {
 		t.Errorf("To Do after filtered move = %v", got)
 	}
 	// Reordering is refused while filtered.
 	m = press(m, "J")
-	if got := titles(m.cols[todo]); !equalStrings(got, []string{"buy milk", "fold laundry"}) {
+	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "fold laundry"}) {
 		t.Errorf("reorder changed order while filtered: %v", got)
 	}
 	// Leaving the column clears its filter.
@@ -530,7 +541,7 @@ func TestDemoModeDoesNotPersist(t *testing.T) {
 	if m.err != nil {
 		t.Errorf("demo mode returned an error: %v", m.err)
 	}
-	if got := titles(m.cols[inProgress]); !equalStrings(got, []string{"write code", "buy milk"}) {
+	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk"}) {
 		t.Errorf("In Progress after move = %v", got)
 	}
 }

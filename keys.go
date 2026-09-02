@@ -66,7 +66,7 @@ var keys = keyMap{
 		key.WithHelp("e/enter", "edit"),
 	),
 	Delete: key.NewBinding(
-		key.WithKeys("d", "delete", "backspace"),
+		key.WithKeys("d"),
 		key.WithHelp("d", "delete"),
 	),
 	MoveLeft: key.NewBinding(

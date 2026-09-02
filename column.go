@@ -181,11 +181,9 @@ func (c *column) remove(id string) tea.Cmd {
 }
 
 // moveSelected shifts the selected task up (-1) or down (+1) within the
-// column. Reordering is disabled while a filter hides cards.
+// column and reports whether anything moved. The caller must make sure no
+// filter is active, since the cursor index is relative to visible items.
 func (c *column) moveSelected(delta int) (tea.Cmd, bool) {
-	if c.hasFilter() {
-		return nil, false
-	}
 	items := c.list.Items()
 	i := c.list.Index()
 	j := i + delta
@@ -219,5 +217,11 @@ func (c *column) update(msg tea.Msg) tea.Cmd {
 }
 
 func (c column) view() string {
-	return c.style().Render(c.list.View())
+	s := c.style()
+	// The list's status bar can grow wider than the list when a filter is
+	// applied; truncate every line so nothing wraps and pushes the board
+	// past the bottom of the terminal.
+	listWidth := max(0, c.width-s.GetHorizontalFrameSize())
+	inner := lipgloss.NewStyle().MaxWidth(listWidth).Render(c.list.View())
+	return s.Render(inner)
 }

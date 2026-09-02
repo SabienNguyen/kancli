@@ -219,7 +219,9 @@ func (m Board) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		title := m.pending.title
 		cmd := m.cols[m.pending.status].remove(m.pending.id)
 		m.pending = Task{}
-		return m, tea.Batch(cmd, m.persist(), m.setStatus("Deleted %q", title))
+		m.persist()
+		status := m.setStatus("Deleted %q", title)
+		return m, tea.Batch(cmd, status)
 	case key.Matches(msg, confirmKeys.No):
 		m.state = stateBoard
 		m.pending = Task{}
@@ -247,7 +249,9 @@ func (m Board) handleFormSubmit(msg formSubmitMsg) (tea.Model, tea.Cmd) {
 		cmd = m.cols[t.status].add(t)
 		what = "Added"
 	}
-	return m, tea.Batch(cmd, m.persist(), m.setStatus("%s %q", what, t.title))
+	m.persist()
+	status := m.setStatus("%s %q", what, t.title)
+	return m, tea.Batch(cmd, status)
 }
 
 // focusColumn moves keyboard focus to another column.
@@ -269,30 +273,36 @@ func (m Board) moveSelected(delta int) (tea.Model, tea.Cmd) {
 	}
 	target := m.focused + status(delta)
 	if !target.valid() {
+		var cmd tea.Cmd
 		if delta > 0 {
-			return m, m.setStatus("%q is already done", t.title)
+			cmd = m.setStatus("%q is already done", t.title)
+		} else {
+			cmd = m.setStatus("%q is already in %s", t.title, todo)
 		}
-		return m, m.setStatus("%q is already in %s", t.title, todo)
+		return m, cmd
 	}
 	removeCmd := src.remove(t.id)
 	t.status = target
 	t.updatedAt = time.Now()
 	addCmd := m.cols[target].add(t)
-	return m, tea.Batch(removeCmd, addCmd, m.persist(),
-		m.setStatus("Moved %q to %s", t.title, target))
+	m.persist()
+	status := m.setStatus("Moved %q to %s", t.title, target)
+	return m, tea.Batch(removeCmd, addCmd, status)
 }
 
 // reorderSelected moves the selected task up or down within its column.
 func (m Board) reorderSelected(delta int) (tea.Model, tea.Cmd) {
 	col := &m.cols[m.focused]
 	if col.hasFilter() {
-		return m, m.setStatus("Clear the filter to reorder tasks")
+		cmd := m.setStatus("Clear the filter to reorder tasks")
+		return m, cmd
 	}
 	cmd, moved := col.moveSelected(delta)
 	if !moved {
 		return m, nil
 	}
-	return m, tea.Batch(cmd, m.persist())
+	m.persist()
+	return m, cmd
 }
 
 // allTasks returns every task on the board in column order.
@@ -306,13 +316,8 @@ func (m Board) allTasks() []Task {
 
 // persist writes the board to disk. Saving is synchronous so successive
 // changes can never be written out of order; errors are shown in the header.
-func (m *Board) persist() tea.Cmd {
-	if err := m.store.save(m.allTasks()); err != nil {
-		m.err = err
-		return nil
-	}
-	m.err = nil
-	return nil
+func (m *Board) persist() {
+	m.err = m.store.save(m.allTasks())
 }
 
 // setStatus shows a message in the header for a few seconds.

@@ -111,8 +111,16 @@ func (s store) load() ([]Task, error) {
 		return nil, fmt.Errorf("%s was written by a newer kancli (version %d)", s.path, f.Version)
 	}
 	tasks := make([]Task, 0, len(f.Tasks))
+	seen := make(map[string]bool, len(f.Tasks))
 	for _, tj := range f.Tasks {
-		tasks = append(tasks, tj.task())
+		t := tj.task()
+		// Tasks are looked up by ID, so a hand-edited file with a repeated
+		// ID would make edits and deletes hit the wrong card.
+		for seen[t.id] {
+			t.id = newID()
+		}
+		seen[t.id] = true
+		tasks = append(tasks, t)
 	}
 	return tasks, nil
 }
