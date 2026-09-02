@@ -102,7 +102,7 @@ type App struct {
 
 	anim    *cardAnim // card in flight, if any
 	animGen int       // counts animations so stale frame ticks are ignored
-	images bool      // the terminal can show image attachments inline
+	images  bool      // the terminal can show image attachments inline
 }
 
 // New builds the root model for a loaded data file.
