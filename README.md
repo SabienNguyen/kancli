@@ -1,9 +1,19 @@
 # Kancli
 
-A kanban board for the command line, built with
-[Bubble Tea](https://github.com/charmbracelet/bubbletea),
+A personal kanban board for the terminal.
+
+This is my fork of [charmbracelet/kancli](https://github.com/charmbracelet/kancli),
+the demo repo from Charm's kanban tutorial on their
+[YouTube channel](https://youtube.com/c/charmcli). I took the tutorial
+skeleton and built it out into the tool I use day to day for my own tasks:
+priorities, due dates, labels, checklists, search, undo, multiple boards, a
+scriptable CLI and a single JSON file I can back up or edit by hand. It is
+built with [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Bubbles](https://github.com/charmbracelet/bubbles) and
 [Lip Gloss](https://github.com/charmbracelet/lipgloss).
+
+It is a single-user, local tool by design. Everything lives in one file on
+your machine; there is no server, account or sync.
 
 ```
  Kancli · Demo                                  1 overdue · 1 due today · ~/.config/kancli/board.json
@@ -20,10 +30,6 @@ A kanban board for the command line, built with
 ╰───────────────────────────────╯╰───────────────────────────────╯╰──────────────────────────────╯
  n new task • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit
 ```
-
-This started as the demo repo for the kanban tutorial on the Charm
-[YouTube channel](https://youtube.com/c/charmcli) and has grown into a
-complete app.
 
 ## Features
 
@@ -44,20 +50,19 @@ complete app.
 
 ## Install
 
-```sh
-go install github.com/charmbracelet/kancli@latest
-```
-
-Prebuilt binaries for Linux, macOS, Windows and FreeBSD are attached to each
-[release](https://github.com/SabienNguyen/kancli/releases). Or build from
-source:
+Download a binary for Linux, macOS, Windows or FreeBSD from the
+[releases page](https://github.com/SabienNguyen/kancli/releases), or build
+from source with Go 1.24 or newer:
 
 ```sh
 git clone https://github.com/SabienNguyen/kancli.git
 cd kancli
 go build
-./kancli -demo
+./kancli -demo      # try it with sample data, nothing is saved
+./kancli            # open your own board
 ```
+
+Put the `kancli` binary somewhere on your `PATH`.
 
 ## The board
 
@@ -196,14 +201,20 @@ in a shell prompt or a cron job:
 Imported tasks get new numbers. Columns are matched by name; unmatched
 tasks go to `-c COLUMN` or the first column.
 
-## Files
+## Storage
+
+Everything is stored in one JSON file, with no database and no network:
 
 | What        | Where                                                             |
 | ----------- | ----------------------------------------------------------------- |
 | Data file   | `$KANCLI_FILE`, else `$XDG_DATA_HOME/kancli/board.json`, else the OS config dir (`~/.config/kancli/board.json` on Linux, `~/Library/Application Support/kancli/board.json` on macOS) |
 | Config file | `$KANCLI_CONFIG`, else `$XDG_CONFIG_HOME/kancli/config.json`, else the OS config dir |
 
-Override the data file for one run with `-file PATH`.
+Override the data file for one run with `-file PATH`. Every change is
+written immediately: the store writes a temp file next to the board and
+renames it into place, so a crash cannot leave a half-written board. Undo
+history, marks and the current search live only in memory. Keeping the data
+file in a synced or version-controlled folder is a simple way to back it up.
 
 ### Config file
 
@@ -286,22 +297,12 @@ GoReleaser (see `.goreleaser.yaml`, which also has a commented Homebrew tap
 section). Set `KANCLI_DEBUG=1` to write Bubble Tea debug logs to
 `./debug.log`.
 
-## Feedback
+## Credits
 
-We'd love to hear your thoughts on this tutorial. Feel free to drop us a note!
-
-* [Twitter](https://twitter.com/charmcli)
-* [The Fediverse](https://mastodon.social/@charmcli)
-* [Discord](https://charm.sh/chat)
+The original tutorial code is by [Charm](https://charm.sh); this fork
+keeps their MIT license. If you want the tutorial itself, start from
+[charmbracelet/kancli](https://github.com/charmbracelet/kancli).
 
 ## License
 
 [MIT](https://github.com/charmbracelet/bubbletea/raw/master/LICENSE)
-
-***
-
-Part of [Charm](https://charm.sh).
-
-<a href="https://charm.sh/"><img alt="The Charm logo" src="https://stuff.charm.sh/charm-badge.jpg" width="400"></a>
-
-Charm热爱开源 • Charm loves open source
