@@ -333,3 +333,42 @@ func TestCLIStatsLogReviewCompactAsOf(t *testing.T) {
 		t.Error("read-only add leaked into the board")
 	}
 }
+
+func TestCLILinks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	runCLI(t, path, "add", "Design")
+	runCLI(t, path, "add", "Build")
+	runCLI(t, path, "add", "Ship")
+	if out, errs, code := runCLI(t, path, "link", "2", "blocked-by", "1"); code != 0 || !strings.Contains(out, "#2 blocked-by #1") {
+		t.Fatalf("link: %d %q %q", code, out, errs)
+	}
+	runCLI(t, path, "link", "3", "subtask-of", "2")
+	if _, errs, code := runCLI(t, path, "link", "1", "blocked-by", "2"); code != 1 || !strings.Contains(errs, "cycle") {
+		t.Errorf("cycle should fail: %d %q", code, errs)
+	}
+	out, _, _ := runCLI(t, path, "show", "2")
+	for _, want := range []string{"blocked by  #1 Design", "subtask     #3 Ship", "status:    blocked"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("show missing %q:\n%s", want, out)
+		}
+	}
+	out, _, _ = runCLI(t, path, "list", "-q", "blocked:yes")
+	if !strings.Contains(out, "Build") || strings.Contains(out, "Design") {
+		t.Errorf("blocked query:\n%s", out)
+	}
+	runCLI(t, path, "done", "1")
+	out, _, _ = runCLI(t, path, "list", "-q", "blocked:yes")
+	if !strings.Contains(out, "No tasks") {
+		t.Errorf("finishing the blocker should unblock:\n%s", out)
+	}
+	if out, _, code := runCLI(t, path, "unlink", "1", "2"); code != 0 || !strings.Contains(out, "removed 1 link") {
+		t.Errorf("unlink: %q", out)
+	}
+	if _, _, code := runCLI(t, path, "unlink", "1", "2"); code != 1 {
+		t.Error("unlinking unlinked tasks should fail")
+	}
+	out, _, _ = runCLI(t, path, "log", "-n", "3")
+	if !strings.Contains(out, "unlinked #1 blocks #2") {
+		t.Errorf("log:\n%s", out)
+	}
+}

@@ -33,6 +33,8 @@ const (
 	EvBoardRemoved      EventKind = "board.removed"
 	EvBoardActivated    EventKind = "board.activated"
 	EvBoardRestored     EventKind = "board.restored"
+	EvLinkAdded         EventKind = "link.added"
+	EvLinkRemoved       EventKind = "link.removed"
 )
 
 // Event is one line of the append-only log. State is derived by replaying
@@ -267,6 +269,10 @@ func (f *File) Apply(e Event) error {
 		return ignoreNotFound(b.RemoveColumn(e.From, e.To))
 	case EvColumnMoved:
 		b.MoveColumn(e.From, e.Index)
+	case EvLinkAdded:
+		return ignoreNotFound(b.AddLink(e.Task, LinkKind(e.Text), e.Index))
+	case EvLinkRemoved:
+		b.RemoveLink(e.Task, LinkKind(e.Text), e.Index)
 	case EvBoardRestored:
 		var nb Board
 		if err := json.Unmarshal(e.Data, &nb); err != nil {
@@ -372,6 +378,10 @@ func (e Event) Describe(f *File) string {
 		return "switched to board " + e.To
 	case EvBoardRestored:
 		return "undo"
+	case EvLinkAdded:
+		return fmt.Sprintf("linked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
+	case EvLinkRemoved:
+		return fmt.Sprintf("unlinked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
 	}
 	return string(e.Kind)
 }

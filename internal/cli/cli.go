@@ -44,6 +44,10 @@ func (c *cli) run(cmd string, args []string) int {
 		err = c.move(args)
 	case "done":
 		err = c.done(args)
+	case "link":
+		err = c.link(args)
+	case "unlink":
+		err = c.unlink(args)
 	case "archive":
 		err = c.archive(args, true)
 	case "restore":
@@ -577,6 +581,15 @@ func formatTask(b *board.Board, t board.Task, now time.Time) string {
 			fmt.Fprintf(&sb, "    %s %s\n", box, item.Text)
 		}
 	}
+	if rels := b.Relations(t.ID); len(rels) > 0 {
+		sb.WriteString("\n  Links\n")
+		for _, r := range rels {
+			fmt.Fprintf(&sb, "    %-11s #%d %s (%s)\n", r.Label, r.Task.ID, r.Task.Title, board.ColName(b, r.Task.Column))
+		}
+	}
+	if b.IsBlocked(t.ID) {
+		sb.WriteString("  status:    blocked\n")
+	}
 	if len(t.Attachments) > 0 {
 		sb.WriteString("\n  Attachments\n")
 		for _, a := range t.Attachments {
@@ -681,6 +694,58 @@ func (c *cli) archive(args []string, archive bool) error {
 		}
 	}
 	return c.Save()
+}
+
+func (c *cli) link(args []string) error {
+	if len(args) != 3 {
+		return usageErr("kancli link <id> <blocks|blocked-by|subtask-of|parent-of|relates> <id>")
+	}
+	ids, err := parseIDs([]string{args[0], args[2]})
+	if err != nil {
+		return err
+	}
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	from, kind, to, err := board.ParseLinkSpec(ids[0], args[1], ids[1])
+	if err != nil {
+		return err
+	}
+	if err := b.AddLink(from, kind, to); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "#%d %s #%d\n", ids[0], strings.ReplaceAll(strings.ToLower(args[1]), "_", "-"), ids[1])
+	return nil
+}
+
+func (c *cli) unlink(args []string) error {
+	if len(args) != 2 {
+		return usageErr("kancli unlink <id> <id>")
+	}
+	ids, err := parseIDs(args)
+	if err != nil {
+		return err
+	}
+	b, err := c.env.board()
+	if err != nil {
+		return err
+	}
+	if err := checkIDs(b, ids); err != nil {
+		return err
+	}
+	n := b.RemoveLinksBetween(ids[0], ids[1])
+	if n == 0 {
+		return fmt.Errorf("#%d and #%d are not linked", ids[0], ids[1])
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "removed %d link%s between #%d and #%d\n", n, board.Plural(n), ids[0], ids[1])
+	return nil
 }
 
 func (c *cli) remove(args []string) error {

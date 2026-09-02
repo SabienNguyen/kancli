@@ -16,13 +16,18 @@ import (
 //	due:today      due date: today, tomorrow, overdue, week, none, YYYY-MM-DD
 //	col:todo       column id or name prefix (or column:, c:)
 type Query struct {
-	Words    []string
-	ids      []int
-	assignee string
-	labels   []string
-	priority *Priority
-	due      string
-	column   string
+	Words     []string
+	ids       []int
+	assignee  string
+	labels    []string
+	priority  *Priority
+	due       string
+	column    string
+	blocked   string // "yes" or "no"
+	blocks    int    // tasks that block this id
+	blockedBy int    // tasks blocked by this id
+	parent    int    // subtasks of this id
+	has       []string
 }
 
 func ParseQuery(s string) Query {
@@ -58,6 +63,33 @@ func ParseQuery(s string) Query {
 			case "col", "column", "c":
 				q.column = val
 				continue
+			case "blocked", "is":
+				if val == "blocked" || val == "yes" || val == "true" {
+					q.blocked = "yes"
+					continue
+				}
+				if val == "unblocked" || val == "no" || val == "false" {
+					q.blocked = "no"
+					continue
+				}
+			case "blocks":
+				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
+					q.blocks = n
+					continue
+				}
+			case "blockedby", "blocked-by", "blocked_by":
+				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
+					q.blockedBy = n
+					continue
+				}
+			case "parent", "subtaskof", "subtask-of", "subtask_of":
+				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
+					q.parent = n
+					continue
+				}
+			case "has":
+				q.has = append(q.has, val)
+				continue
 			case "assignee", "a", "who":
 				q.assignee = val
 				continue
@@ -70,7 +102,17 @@ func ParseQuery(s string) Query {
 
 func (q Query) Empty() bool {
 	return len(q.Words) == 0 && len(q.ids) == 0 && q.assignee == "" && len(q.labels) == 0 &&
-		q.priority == nil && q.due == "" && q.column == ""
+		q.priority == nil && q.due == "" && q.column == "" && q.blocked == "" && q.blocks == 0 &&
+		q.blockedBy == 0 && q.parent == 0 && len(q.has) == 0
+}
+
+func hasLinkTo(t Task, kind LinkKind, id int) bool {
+	for _, l := range t.Links {
+		if l.Kind == kind && l.Task == id {
+			return true
+		}
+	}
+	return false
 }
 
 // matches reports whether a task satisfies the query.
@@ -96,6 +138,51 @@ func (q Query) Matches(b *Board, t Task, now time.Time) bool {
 	}
 	if q.priority != nil && t.Priority != *q.priority {
 		return false
+	}
+	if q.blocked == "yes" && !b.IsBlocked(t.ID) {
+		return false
+	}
+	if q.blocked == "no" && b.IsBlocked(t.ID) {
+		return false
+	}
+	if q.blocks != 0 && !hasLinkTo(t, LinkBlocks, q.blocks) {
+		return false
+	}
+	if q.blockedBy != 0 && !b.hasLink(q.blockedBy, LinkBlocks, t.ID) {
+		return false
+	}
+	if q.parent != 0 && !hasLinkTo(t, LinkSubtaskOf, q.parent) {
+		return false
+	}
+	for _, h := range q.has {
+		switch h {
+		case "subtasks", "subtask", "children":
+			if len(b.Subtasks(t.ID)) == 0 {
+				return false
+			}
+		case "blockers", "blocker":
+			if !b.IsBlocked(t.ID) {
+				return false
+			}
+		case "links", "link":
+			if len(b.Relations(t.ID)) == 0 {
+				return false
+			}
+		case "parent":
+			if b.Parent(t.ID) == nil {
+				return false
+			}
+		case "due":
+			if t.Due == "" {
+				return false
+			}
+		case "checklist":
+			if len(t.Checklist) == 0 {
+				return false
+			}
+		default:
+			return false
+		}
 	}
 	if q.column != "" {
 		c := b.Column(q.column)

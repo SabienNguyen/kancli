@@ -48,6 +48,8 @@ Commands:
   archive <id...>      archive tasks
   restore <id...>      restore archived tasks
   rm <id...>           delete tasks permanently
+  link <id> <kind> <id>  link tasks: blocks, blocked-by, subtask-of, parent-of, relates
+  unlink <id> <id>     remove every link between two tasks
   due                  list overdue and due-today tasks (-days, -notify)
   stats                cycle time, throughput, WIP and aging (-days, -json, -q SQL)
   review               Markdown review of the last week (-days, -o)

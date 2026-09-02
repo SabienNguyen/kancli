@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,7 +202,7 @@ func (m *App) refresh() tea.Cmd {
 		} else {
 			board.SortTasks(tasks, m.sortMode)
 		}
-		d := cardDelegate{st: m.st, g: m.g, compact: m.compact, marks: m.marks, now: now}
+		d := cardDelegate{st: m.st, g: m.g, compact: m.compact, marks: m.marks, now: now, board: m.board}
 		m.cols[i].configure(col, m.board.CountIn(col.ID), m.board.WIPExceeded(col.ID), d)
 		cmds = append(cmds, m.cols[i].setTasks(tasks))
 	}
@@ -995,7 +996,59 @@ func (m App) moveTargets(delta int) (tea.Model, tea.Cmd) {
 	if m.board.WIPExceeded(lastCol.ID) {
 		cmds = append(cmds, m.setStatus("%s is over its WIP limit (%d/%d)", lastCol.Name, m.board.CountIn(lastCol.ID), lastCol.WIPLimit))
 	}
+	if warn := m.doneWarning(ids, lastCol); warn != "" {
+		cmds = append(cmds, m.setStatus("%s", warn))
+	}
 	return m, tea.Batch(cmds...)
+}
+
+// doneWarning explains why finishing a task may be premature: open
+// subtasks or unfinished blockers. It never prevents the move.
+func (m *App) doneWarning(ids []int, target *board.Column) string {
+	done := m.board.DoneColumn()
+	if done == nil || target.ID != done.ID {
+		return ""
+	}
+	for _, id := range ids {
+		if fin, total := m.board.SubtaskProgress(id); total > 0 && fin < total {
+			return fmt.Sprintf("Moved #%d to %s with %d open subtask%s", id, target.Name, total-fin, board.Plural(total-fin))
+		}
+		if bl := m.board.Blockers(id); len(bl) > 0 {
+			return fmt.Sprintf("Moved #%d to %s while still blocked by %s", id, target.Name, bl[0].Ref())
+		}
+	}
+	return ""
+}
+
+// parseLinkInput reads "blocks 15" style text typed in the link prompt.
+func parseLinkInput(from int, text string) (int, board.LinkKind, int, error) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) < 2 {
+		return 0, "", 0, fmt.Errorf("type a kind and a task number, e.g. blocks 15")
+	}
+	last := strings.TrimPrefix(fields[len(fields)-1], "#")
+	to, err := strconv.Atoi(last)
+	if err != nil {
+		return 0, "", 0, fmt.Errorf("%q is not a task number", fields[len(fields)-1])
+	}
+	return board.ParseLinkSpec(from, strings.Join(fields[:len(fields)-1], " "), to)
+}
+
+// linkWord phrases a stored link from the point of view of task ref.
+func linkWord(from int, kind board.LinkKind, ref int) string {
+	switch kind {
+	case board.LinkBlocks:
+		if from == ref {
+			return "blocks"
+		}
+		return "is blocked by"
+	case board.LinkSubtaskOf:
+		if from == ref {
+			return "is a subtask of"
+		}
+		return "is the parent of"
+	}
+	return "relates to"
 }
 
 // reorderSelected moves the selected task up or down within its column.
@@ -1204,6 +1257,24 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		}
 		m.renderDetail()
 		return m, m.changed("Checklist item added")
+	case promptLink:
+		if text == "" {
+			m.renderDetail()
+			return m, nil
+		}
+		from, kind, to, err := parseLinkInput(msg.ref, text)
+		if err != nil {
+			m.renderDetail()
+			return m, m.setStatus("%v", err)
+		}
+		m.snapshot()
+		if err := m.board.AddLink(from, kind, to); err != nil {
+			m.dropSnapshot()
+			m.renderDetail()
+			return m, m.setStatus("%v", err)
+		}
+		m.renderDetail()
+		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), to)
 	case promptAttachment:
 		if text == "" {
 			m.renderDetail()
@@ -1237,7 +1308,7 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	id := t.ID
-	if m.readOnly && !key.Matches(msg, k.Back) && !key.Matches(msg, k.Scroll) && !key.Matches(msg, k.Item) && !key.Matches(msg, k.Open) && msg.Type != tea.KeyCtrlC {
+	if m.readOnly && !key.Matches(msg, k.Back) && !key.Matches(msg, k.Scroll) && !key.Matches(msg, k.Item) && !key.Matches(msg, k.Open) && !key.Matches(msg, k.Go) && msg.Type != tea.KeyCtrlC {
 		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
 	}
 	switch {
@@ -1273,10 +1344,32 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.snapshot()
 			m.board.RemoveAttachment(id, i-len(t.Checklist))
 		default:
-			return m, m.setStatus("Select an item with tab first")
+			r, ok := m.detail.linkAt(*t)
+			if !ok {
+				return m, m.setStatus("Select an item with tab first")
+			}
+			m.snapshot()
+			if r.Outgoing {
+				m.board.RemoveLink(id, r.Kind, r.Task.ID)
+			} else {
+				m.board.RemoveLink(r.Task.ID, r.Kind, id)
+			}
+			m.renderDetail()
+			return m, m.changed("Unlinked %s", r.Task.Ref())
 		}
 		m.renderDetail()
 		return m, m.changed("Removed item")
+	case key.Matches(msg, k.Link):
+		return m.openPrompt(promptLink, "Link "+t.Ref()+" (e.g. blocks 15, blocked-by 15, subtask-of 3, parent-of 7, relates 9)", "", id, "", stateDetail)
+	case key.Matches(msg, k.Go):
+		r, ok := m.detail.linkAt(*t)
+		if !ok {
+			if len(m.detail.links) == 0 {
+				return m, m.setStatus("No links on this task")
+			}
+			r = m.detail.links[0]
+		}
+		return m.openDetail(r.Task.ID)
 	case key.Matches(msg, k.AddItem):
 		return m.openPrompt(promptChecklistItem, "Add checklist item", "", id, "", stateDetail)
 	case key.Matches(msg, k.Comment):
@@ -1567,6 +1660,9 @@ func (m App) dueSummary() string {
 	}
 	if todayN > 0 {
 		parts = append(parts, m.st.warning.Render(fmt.Sprintf("%d due today", todayN)))
+	}
+	if blocked := m.board.BlockedCount(); blocked > 0 {
+		parts = append(parts, m.st.err.Render(fmt.Sprintf("%d blocked", blocked)))
 	}
 	return strings.Join(parts, m.st.muted.Render(" "+m.g.dot+" "))
 }

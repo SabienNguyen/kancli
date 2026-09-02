@@ -683,3 +683,58 @@ func TestReadOnlyAsOfView(t *testing.T) {
 		}
 	}
 }
+
+func TestLinksInDetailAndCards(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 40})
+	m = mm.(App)
+	// #2 blocks #1 via the prompt.
+	m = press(m, "enter", "l")
+	if m.state != statePrompt {
+		t.Fatal("l should open the link prompt")
+	}
+	m = typeText(m, "blocked-by 2")
+	m = press(m, "enter")
+	if m.state != stateDetail || !m.board.IsBlocked(1) {
+		t.Fatalf("link not created: state=%v blocked=%v status=%q", m.state, m.board.IsBlocked(1), m.statusMsg)
+	}
+	v := m.View()
+	if !strings.Contains(v, "blocked by") || !strings.Contains(v, "#2") {
+		t.Error("detail view should list the blocker")
+	}
+	// Bad input is reported, not applied.
+	m = press(m, "l")
+	m = typeText(m, "hates 2")
+	m = press(m, "enter")
+	if !strings.Contains(m.statusMsg, "unknown link kind") {
+		t.Errorf("status = %q", m.statusMsg)
+	}
+	// Jump to the linked task and back.
+	m = press(m, "g")
+	if m.detail.taskID != 2 {
+		t.Errorf("g should open #2, opened #%d", m.detail.taskID)
+	}
+	m = press(m, "esc")
+	if !strings.Contains(m.View(), m.g.blocked) || !strings.Contains(m.View(), "blocked by #2") || !strings.Contains(m.dueSummary(), "1 blocked") {
+		t.Error("card and header should show the blocked state")
+	}
+	// Moving the blocked task to Done warns but succeeds (focus stays on
+	// the source column, so follow the card with l).
+	m = press(m, "1", "L", "l", "L")
+	if m.board.Task(1).Column != "done" || !strings.Contains(m.statusMsg, "still blocked by #2") {
+		t.Errorf("done guard: column=%s status=%q", m.board.Task(1).Column, m.statusMsg)
+	}
+	// Remove the link from the detail page: tab past 3 checklist items
+	// and 1 attachment onto the link row.
+	m = press(m, "u", "u", "1", "enter", "tab", "tab", "tab", "tab", "tab", "X")
+	if m.board.IsBlocked(1) {
+		t.Errorf("X on the link row should unlink; status=%q", m.statusMsg)
+	}
+	// Subtask progress on the parent card, via the prompt on #2.
+	m = press(m, "esc", "j", "enter", "l")
+	m = typeText(m, "subtask-of 3")
+	m = press(m, "enter", "esc")
+	if !strings.Contains(m.View(), "0/1 subtask") || !strings.Contains(m.View(), m.g.subtask+" #3") {
+		t.Error("cards should show subtask progress and parent")
+	}
+}

@@ -18,6 +18,7 @@ import (
 // checklist, comments and attachments.
 type detailView struct {
 	taskID int
+	links  []board.Relation
 	vp     viewport.Model
 	cursor int // index into checklist + attachments, -1 for none
 	st     Styles
@@ -40,9 +41,19 @@ func (d *detailView) setSize(width, height int) {
 	d.help.Width = d.vp.Width
 }
 
-// itemCount is the number of selectable checklist + attachment rows.
+// itemCount is the number of selectable checklist, attachment and link
+// rows. The board is needed because incoming links live on other tasks.
 func (d detailView) itemCount(t board.Task) int {
-	return len(t.Checklist) + len(t.Attachments)
+	return len(t.Checklist) + len(t.Attachments) + len(d.links)
+}
+
+// linkAt returns the relation under the cursor, if the cursor is on one.
+func (d detailView) linkAt(t board.Task) (board.Relation, bool) {
+	i := d.cursor - len(t.Checklist) - len(t.Attachments)
+	if i < 0 || i >= len(d.links) {
+		return board.Relation{}, false
+	}
+	return d.links[i], true
 }
 
 // moveCursor steps through checklist items and attachments.
@@ -133,6 +144,31 @@ func (d *detailView) render(t board.Task, b *board.Board, now time.Time) {
 	}
 	out = append(out, "")
 
+	d.links = b.Relations(t.ID)
+	out = append(out, st.label.Render("Links"))
+	if len(d.links) == 0 {
+		out = append(out, st.muted.Render("  none · press l to link (blocks, blocked-by, subtask-of, parent-of, relates)"))
+	}
+	for i, r := range d.links {
+		where := board.ColName(b, r.Task.Column)
+		if r.Task.Archived() {
+			where = "archived"
+		}
+		label := st.muted.Render(r.Label)
+		if r.Label == "blocked by" && !r.Task.Archived() && !isDone(b, r.Task) {
+			label = st.err.Render(r.Label)
+		}
+		line := fmt.Sprintf("  %s %s %s %s", label, st.muted.Render(r.Task.Ref()), r.Task.Title, st.muted.Render("("+where+")"))
+		if len(t.Checklist)+len(t.Attachments)+i == d.cursor {
+			line = st.strong.Render("› ") + strings.TrimPrefix(line, "  ")
+		}
+		out = append(out, wrap.Render(line))
+	}
+	if done, total := b.SubtaskProgress(t.ID); total > 0 {
+		out = append(out, st.muted.Render(fmt.Sprintf("  %d of %d subtask%s finished", done, total, board.Plural(total))))
+	}
+	out = append(out, "")
+
 	if sim := board.SimilarTasks(b, t.Title, t.ID, 3); len(sim) > 0 {
 		out = append(out, st.label.Render("Similar tasks"))
 		for _, s := range sim {
@@ -163,6 +199,11 @@ func (d *detailView) render(t board.Task, b *board.Board, now time.Time) {
 		}
 	}
 	d.vp.SetContent(strings.Join(out, "\n"))
+}
+
+func isDone(b *board.Board, t board.Task) bool {
+	done := b.DoneColumn()
+	return done != nil && t.Column == done.ID
 }
 
 func colColor(b *board.Board, id string) string {
