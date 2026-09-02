@@ -10,26 +10,35 @@ import (
 
 // Decode parses any supported file version.
 func Decode(data []byte) (*File, error) {
+	f, _, err := DecodeVersion(data)
+	return f, err
+}
+
+// DecodeVersion is Decode plus the version number the bytes were written
+// with (0 or 1 for the original format). Callers use it to notice an
+// upgrade before writing anything.
+func DecodeVersion(data []byte) (f *File, version int, err error) {
 	var probe struct {
 		Version int             `json:"version"`
 		Boards  json.RawMessage `json:"boards"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	switch {
 	case probe.Version > FileVersion:
-		return nil, fmt.Errorf("file was written by a newer kancli (version %d)", probe.Version)
+		return nil, probe.Version, fmt.Errorf("file was written by a newer kancli (version %d)", probe.Version)
 	case probe.Version <= 1 && len(probe.Boards) == 0:
 		// The original single-board format (or a file with no boards at all).
-		return MigrateV1(data)
+		f, err := MigrateV1(data)
+		return f, probe.Version, err
 	}
-	var f File
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, err
+	f = &File{}
+	if err := json.Unmarshal(data, f); err != nil {
+		return nil, probe.Version, err
 	}
-	NormalizeFile(&f)
-	return &f, nil
+	NormalizeFile(f)
+	return f, probe.Version, nil
 }
 
 // normalizeFile repairs anything a hand-edited file may be missing.

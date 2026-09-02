@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SabienNguyen/kancli/internal/board"
@@ -95,5 +96,74 @@ func copyTree(t *testing.T, src, dst string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadBacksUpOlderFormatOnce(t *testing.T) {
+	dir := t.TempDir()
+	copyTree(t, filepath.Join("testdata", "v1"), dir)
+	path := filepath.Join(dir, "board.json")
+	original, _ := os.ReadFile(path)
+
+	st := New(path)
+	if _, err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	up, ok := st.Upgraded()
+	if !ok || up.From != 1 || up.To != board.FileVersion {
+		t.Fatalf("Upgraded() = %+v, %v", up, ok)
+	}
+	if up.Backup != filepath.Join(dir, "board.backups", "v1") {
+		t.Errorf("backup dir = %q", up.Backup)
+	}
+	got, err := os.ReadFile(filepath.Join(up.Backup, "board.json"))
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("backup is not a byte copy of the original: %v", err)
+	}
+
+	// The second open of an already-current file reports nothing and leaves
+	// the backup alone.
+	f, _ := st.Load()
+	if err := st.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	st2 := New(path)
+	if _, err := st2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st2.Upgraded(); ok {
+		t.Error("a current-format file must not report an upgrade")
+	}
+	got2, _ := os.ReadFile(filepath.Join(up.Backup, "board.json"))
+	if string(got2) != string(original) {
+		t.Error("backup was overwritten")
+	}
+}
+
+func TestLoadBacksUpEventLogToo(t *testing.T) {
+	// Simulate a future upgrade: a v2 directory whose snapshot claims to be
+	// older than the current format. Both the snapshot and the live log are
+	// copied.
+	dir := t.TempDir()
+	copyTree(t, filepath.Join("testdata", "v2"), dir)
+	path := filepath.Join(dir, "board.json")
+	data, _ := os.ReadFile(path)
+	data = []byte(strings.Replace(string(data), `"version": 2`, `"version": 1`, 1))
+	// version 1 with boards present is decoded as the current format but is
+	// still reported as an upgrade from 1.
+	os.WriteFile(path, data, 0o644) //nolint:errcheck // test data
+
+	st := New(path)
+	if _, err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	up, ok := st.Upgraded()
+	if !ok {
+		t.Fatal("expected an upgrade")
+	}
+	for _, name := range []string{"board.json", "board.events.jsonl"} {
+		if _, err := os.Stat(filepath.Join(up.Backup, name)); err != nil {
+			t.Errorf("%s not backed up: %v", name, err)
+		}
 	}
 }

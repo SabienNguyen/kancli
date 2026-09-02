@@ -61,6 +61,7 @@ type Store struct {
 	archiveDir string
 	snapDir    string
 	lockPath   string
+	backupDir  string
 	actor      string
 
 	logSize    int64     // bytes of the tail log this process has consumed
@@ -73,6 +74,23 @@ type Store struct {
 
 	segments map[string]cachedSegment      // archived segments already parsed
 	walkers  map[string]*board.StatsWalker // incremental stats per board
+
+	upgrade *Upgrade // set by Load when it opened older-format data
+}
+
+// Upgrade describes a data directory that an older kancli wrote and this
+// one has just opened.
+type Upgrade struct {
+	From, To int
+	Backup   string // directory holding a copy of the old files
+}
+
+// Upgraded reports the upgrade Load performed, if any.
+func (s *Store) Upgraded() (Upgrade, bool) {
+	if s.upgrade == nil {
+		return Upgrade{}, false
+	}
+	return *s.upgrade, true
 }
 
 // cachedSegment is a parsed archive file; archived segments never change,
@@ -90,6 +108,7 @@ func New(path string) *Store {
 		s.archiveDir = base + ".events"
 		s.snapDir = base + ".snapshots"
 		s.lockPath = base + ".lock"
+		s.backupDir = base + ".backups"
 	}
 	return s
 }
@@ -168,9 +187,14 @@ func (s *Store) Load() (*board.File, error) {
 		f.SetActor(s.actor)
 		return f, nil
 	}
-	f, fresh, err := s.readSnapshot(s.path)
+	f, fresh, version, err := s.readSnapshot(s.path)
 	if err != nil {
 		return nil, err
+	}
+	if version < board.FileVersion && exists(s.path) {
+		if err := s.backupOld(version); err != nil {
+			return nil, err
+		}
 	}
 	f.SetActor(s.actor)
 
@@ -217,23 +241,50 @@ func exists(path string) bool {
 
 // readSnapshot decodes a snapshot file. fresh reports that it existed but
 // carries no event sequence yet (a pre-event-log board).
-func (s *Store) readSnapshot(path string) (f *board.File, fresh bool, err error) {
+func (s *Store) readSnapshot(path string) (f *board.File, fresh bool, version int, err error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		s.snapMod = time.Time{}
-		return board.NewFile(), false, nil
+		return board.NewFile(), false, board.FileVersion, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s: %w", path, err)
+		return nil, false, 0, fmt.Errorf("read %s: %w", path, err)
 	}
 	if info, err := os.Stat(path); err == nil && path == s.path {
 		s.snapMod = info.ModTime()
 	}
-	f, err = board.Decode(data)
+	f, version, err = board.DecodeVersion(data)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse %s: %w", path, err)
+		return nil, false, version, fmt.Errorf("parse %s: %w", path, err)
 	}
-	return f, f.LastSeq == 0 && f.SnapshotAt.IsZero(), nil
+	return f, f.LastSeq == 0 && f.SnapshotAt.IsZero(), version, nil
+}
+
+// backupOld copies the snapshot and the live log as they were before this
+// kancli touches them, once per source version. Nothing is overwritten:
+// a directory that already exists is left alone.
+func (s *Store) backupOld(from int) error {
+	dir := filepath.Join(s.backupDir, fmt.Sprintf("v%d", from))
+	s.upgrade = &Upgrade{From: from, To: board.FileVersion, Backup: dir}
+	if exists(dir) {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create backup %s: %w", dir, err)
+	}
+	for _, src := range []string{s.path, s.logPath} {
+		data, err := os.ReadFile(src)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("back up %s: %w", src, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.Base(src)), data, 0o644); err != nil {
+			return fmt.Errorf("back up %s: %w", src, err)
+		}
+	}
+	return nil
 }
 
 // bootstrap seeds the log for a board that predates it: an empty initial
@@ -286,7 +337,7 @@ func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
 	sort.Strings(snapshots)
 	var base *board.File
 	for i := len(snapshots) - 1; i >= 0; i-- {
-		f, _, err := s.readSnapshot(snapshots[i])
+		f, _, _, err := s.readSnapshot(snapshots[i])
 		if err != nil {
 			continue
 		}

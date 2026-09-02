@@ -174,6 +174,9 @@ func (c *cli) prepare(actor string) error {
 		return err
 	}
 	c.env = e
+	if up, ok := e.Store.Upgraded(); ok {
+		fmt.Fprintf(c.stderr, "kancli: upgraded your board from format v%d to v%d; the old files are in %s\n", up.From, up.To, up.Backup)
+	}
 	return nil
 }
 

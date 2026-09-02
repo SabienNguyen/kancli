@@ -717,3 +717,23 @@ func TestLinkSpecAndMentions(t *testing.T) {
 		t.Error("blocks:/has: queries")
 	}
 }
+
+func TestDecodeVersionReportsSource(t *testing.T) {
+	v1 := []byte(`{"version":1,"tasks":[{"id":"x","status":"done","title":"t","created_at":"2025-06-01T09:00:00Z","updated_at":"2025-06-01T09:00:00Z"}]}`)
+	f, ver, err := DecodeVersion(v1)
+	if err != nil || ver != 1 || f.Version != FileVersion || len(f.Boards[0].Tasks) != 1 {
+		t.Fatalf("v1: ver=%d f.Version=%d tasks=%d err=%v", ver, f.Version, len(f.Boards[0].Tasks), err)
+	}
+	noVersion := []byte(`{"tasks":[]}`)
+	if _, ver, err := DecodeVersion(noVersion); err != nil || ver != 0 {
+		t.Fatalf("unversioned: ver=%d err=%v", ver, err)
+	}
+	cur := NewFile()
+	data, _ := json.Marshal(cur)
+	if _, ver, err := DecodeVersion(data); err != nil || ver != FileVersion {
+		t.Fatalf("current: ver=%d err=%v", ver, err)
+	}
+	if _, _, err := DecodeVersion([]byte(`{"version":99,"boards":[]}`)); err == nil {
+		t.Fatal("newer file must be refused")
+	}
+}
