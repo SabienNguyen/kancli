@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SabienNguyen/kancli/internal/board"
+	"github.com/SabienNguyen/kancli/internal/kitty"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -27,10 +28,40 @@ type detailView struct {
 	help   help.Model
 	width  int
 	height int
+
+	md     *markdown
+	images bool                    // inline previews of image attachments
+	pics   map[string]*kitty.Image // decoded previews by path and width
+	picErr map[string]string
 }
 
-func newDetailView(id int, st Styles, g Glyphs) detailView {
-	return detailView{taskID: id, vp: viewport.New(0, 0), cursor: -1, st: st, g: g, keys: detailKeys, help: help.New()}
+func newDetailView(id int, st Styles, g Glyphs, images bool) detailView {
+	return detailView{taskID: id, vp: viewport.New(0, 0), cursor: -1, st: st, g: g, keys: detailKeys, help: help.New(),
+		md: &markdown{mono: st.th.mono}, images: images, pics: map[string]*kitty.Image{}, picErr: map[string]string{}}
+}
+
+// preview returns the placeholder lines for an image attachment, loading
+// and caching it on first use.
+func (d *detailView) preview(ref string, width int) ([]string, string) {
+	key := fmt.Sprintf("%s@%d", ref, width)
+	if msg, ok := d.picErr[key]; ok {
+		return nil, msg
+	}
+	im, ok := d.pics[key]
+	if !ok {
+		var err error
+		im, err = kitty.Load(ref, min(width-2, 60), 12)
+		if err != nil {
+			d.picErr[key] = err.Error()
+			return nil, err.Error()
+		}
+		d.pics[key] = im
+	}
+	lines := im.Lines()
+	for i := range lines {
+		lines[i] = "  " + lines[i]
+	}
+	return lines, ""
 }
 
 func (d *detailView) setSize(width, height int) {
@@ -103,7 +134,7 @@ func (d *detailView) render(t board.Task, b *board.Board, now time.Time) {
 
 	if t.Description != "" {
 		out = append(out, st.label.Render("Description"))
-		out = append(out, wrap.Render(t.Description))
+		out = append(out, d.md.render(t.Description, w))
 		out = append(out, "")
 	}
 
@@ -141,6 +172,13 @@ func (d *detailView) render(t board.Task, b *board.Board, now time.Time) {
 			line = st.strong.Render("› ") + st.chip.Render(a)
 		}
 		out = append(out, wrap.Render(line))
+		if d.images && kitty.IsImage(a) {
+			lines, errMsg := d.preview(a, w)
+			if errMsg != "" {
+				out = append(out, st.muted.Render("    (no preview: "+errMsg+")"))
+			}
+			out = append(out, lines...)
+		}
 	}
 	out = append(out, "")
 

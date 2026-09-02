@@ -32,6 +32,9 @@ type Board struct {
 
 	rec   *recorder
 	clock func() time.Time
+	// stamp is the clock reading of the mutation in progress, so the event
+	// it emits carries exactly the time written into the task.
+	stamp time.Time
 
 	// byID maps task id to position in Tasks. It is rebuilt whenever gen
 	// changes; mutations bump gen with touch().
@@ -844,35 +847,35 @@ func (b *Board) RemoveColumn(id, moveTo string) error {
 	if len(b.Columns) <= 1 {
 		return fmt.Errorf("cannot delete the only column")
 	}
-	var target *Column
+	// Copy the target's id and name: a pointer into b.Columns would move to
+	// a different column once the deleted one is cut out of the slice.
+	to, toName := "", ""
 	if moveTo != "" {
-		target = b.Column(moveTo)
+		target := b.Column(moveTo)
 		if target == nil || target.ID == id {
 			return fmt.Errorf("no column %q to move tasks to", moveTo)
 		}
+		to, toName = target.ID, target.Name
 	}
 	kept := b.Tasks[:0]
+	now := b.now()
 	for _, t := range b.Tasks {
 		if t.Column != id {
 			kept = append(kept, t)
 			continue
 		}
-		if target == nil {
+		if to == "" {
 			continue
 		}
-		t.Column = target.ID
+		t.Column = to
 		if !t.Archived() {
-			t.logAt(b.now(), "Moved to %s (column %s deleted)", target.Name, b.Columns[i].Name)
+			t.logAt(now, "Moved to %s (column %s deleted)", toName, b.Columns[i].Name)
 		}
 		kept = append(kept, t)
 	}
 	b.Tasks = kept
 	b.touch()
 	b.Columns = append(b.Columns[:i], b.Columns[i+1:]...)
-	to := ""
-	if target != nil {
-		to = target.ID
-	}
 	b.emit(Event{Kind: EvColumnRemoved, From: id, To: to})
 	return nil
 }

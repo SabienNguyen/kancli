@@ -1,0 +1,36 @@
+ Kancli · Demo                                                                        demo mode · changes are not saved 
+╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
+│    To Do 4                           ││    In Progress 2/2                   ││    Done 2                            │
+│                                      ││                                      ││                                      │
+│ │ #1 ↑ Write the release notes       ││ │ #5 ‼ Ship the CLI subcommands      ││ │ #7 Upgrade to Bubble Tea v1        │
+│ │ Cover the new search syntax, undo… ││ │ add, list, move, done, export and… ││ │                                    │
+│ │ Sep 3 · @sam · +docs · ☑ 1/3 · 1 … ││ │ Sep 2 · @sam · +feature · 1 comme… ││ │ +chore                             │
+│                                      ││                                      ││                                      │
+│   #2 • Fix the flaky terminal resiz… ││   #6 • Review the mouse support PR   ││   #8 ↓ Stay cool                     │
+│                                      ││                                      ││   as a cucumber                      │
+│   in 6d · +bug · +tests              ││   Sep 5 · @alex · +review            ││                                      │
+│                                      ││                                      ││                                      │
+│   #3 Buy milk                        ││                                      ││                                      │
+│   strawberry milk                    ││                                      ││                                      │
+│   +home                              ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│   #4 ↓ Plan the team offsite         ││                                      ││                                      │
+│   Venue, agenda and travel.          ││                                      ││                                      │
+│   Sep 22 · @alex · +planning         ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
+ ↑/k up                    n       new task    H/⇧← move left     u undo                C      add column     …         
+ ↓/j down                  enter/v view        L/⇧→ move right    U redo                E      edit column              
+ ←/h prev column           e       edit        K/⇧↑ move up       b boards              D      delete column            
+ →/l next column           d       delete      J/⇧↓ move down     z archived tasks      <      column left              
+ 1-9 jump to column        a       archive     /    search        Z archive all done    >      column right             
+ esc clear marks/search    space   mark        s    sort          S stats               ctrl+s write snapshot           
+                                                                  R reload file                                         

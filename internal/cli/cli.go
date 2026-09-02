@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -27,71 +26,35 @@ import (
 // cli runs the non-interactive subcommands.
 type cli struct {
 	env    *Env
+	opts   Options
 	stdout io.Writer
 	stderr io.Writer
+	launch func(*Env) error
+
+	ran    bool   // a command body started running
+	name   string // command being run, for error messages
+	envErr bool   // the failure came from loading the environment
 }
 
-func (c *cli) run(cmd string, args []string) int {
-	var err error
-	switch cmd {
-	case "add":
-		err = c.add(args)
-	case "list", "ls":
-		err = c.list(args)
-	case "show":
-		err = c.show(args)
-	case "move", "mv":
-		err = c.move(args)
-	case "done":
-		err = c.done(args)
-	case "link":
-		err = c.link(args)
-	case "unlink":
-		err = c.unlink(args)
-	case "archive":
-		err = c.archive(args, true)
-	case "restore":
-		err = c.archive(args, false)
-	case "rm", "delete":
-		err = c.remove(args)
-	case "due":
-		err = c.due(args)
-	case "stats":
-		err = c.stats(args)
-	case "review":
-		err = c.review(args)
-	case "log", "history":
-		err = c.log(args)
-	case "compact":
-		err = c.Compact(args)
-	case "export":
-		err = c.export(args)
-	case "import":
-		err = c.importCmd(args)
-	case "boards", "board":
-		err = c.boards(args)
-	case "columns", "cols":
-		err = c.columns(args)
-	case "config":
-		err = c.config(args)
-	case "keys":
-		err = c.keys(args)
-	default:
-		fmt.Fprintf(c.stderr, "kancli: unknown command %q (see `kancli help`)\n", cmd)
-		return 2
+// Flag values for the commands that take more than positional arguments.
+type (
+	addOpts struct {
+		desc, prio, due, labels, who, col string
 	}
-	if err != nil {
-		if errors.Is(err, errSilentExit) {
-			return 1
-		}
-		fmt.Fprintf(c.stderr, "kancli %s: %v\n", cmd, err)
-		if errors.Is(err, errUsage) {
-			return 2
-		}
-		return 1
+	listOpts struct {
+		col, query, sortBy    string
+		asJSON, archived, all bool
 	}
-	return 0
-}
+	statsOpts struct {
+		days            int
+		asJSON, showSQL bool
+		query, format   string
+	}
+	exportOpts struct {
+		format, out string
+		all, events bool
+	}
+)
 
 var errUsage = errors.New("usage error")
 
@@ -100,12 +63,6 @@ var errSilentExit = errors.New("silent exit")
 
 func usageErr(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, args...))
-}
-
-func (c *cli) flags(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet("kancli "+name, flag.ContinueOnError)
-	fs.SetOutput(c.stderr)
-	return fs
 }
 
 func (c *cli) Save() error {
@@ -120,19 +77,8 @@ func (c *cli) Save() error {
 
 // --- stats / review / log / compact -------------------------------------------
 
-func (c *cli) stats(args []string) error {
-	fs := c.flags("stats")
-	var days int
-	var asJSON, showSQL bool
-	var query, format string
-	fs.IntVar(&days, "days", 90, "window for throughput, WIP and cycle time")
-	fs.BoolVar(&asJSON, "json", false, "print the statistics as JSON")
-	fs.StringVar(&query, "q", "", "run this SQL with DuckDB over the tasks and events views")
-	fs.StringVar(&format, "format", "box", "DuckDB output: box, json, csv or markdown")
-	fs.BoolVar(&showSQL, "sql", false, "print the DuckDB view definitions and example queries")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) stats(o statsOpts) error {
+	days, asJSON, showSQL, query, format := o.days, o.asJSON, o.showSQL, o.query, o.format
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -219,15 +165,7 @@ func formatStats(st board.Stats) string {
 	return sb.String()
 }
 
-func (c *cli) review(args []string) error {
-	fs := c.flags("review")
-	var days int
-	var out string
-	fs.IntVar(&days, "days", 7, "period to review")
-	fs.StringVar(&out, "o", "", "write the Markdown to this file")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) review(days int, out string) error {
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -244,16 +182,7 @@ func (c *cli) review(args []string) error {
 	return err
 }
 
-func (c *cli) log(args []string) error {
-	fs := c.flags("log")
-	var n, task int
-	var asJSON bool
-	fs.IntVar(&n, "n", 20, "number of events to show")
-	fs.IntVar(&task, "task", 0, "only events for this task id")
-	fs.BoolVar(&asJSON, "json", false, "print raw events as JSON lines")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) log(n, task int, asJSON bool) error {
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -294,7 +223,7 @@ func (c *cli) log(args []string) error {
 	return nil
 }
 
-func (c *cli) Compact(args []string) error {
+func (c *cli) Compact() error {
 	if c.env.ReadOnly {
 		return fmt.Errorf("the board is opened read-only with -as-of")
 	}
@@ -329,41 +258,6 @@ func checkIDs(b *board.Board, ids []int) error {
 	return nil
 }
 
-// flagsFirst moves flags (and their values) ahead of positional arguments
-// so that `kancli add "title" -p high` works as well as `kancli add -p high
-// "title"`.
-func flagsFirst(fs *flag.FlagSet, args []string) []string {
-	var flags, rest []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			rest = append(rest, args[i+1:]...)
-			break
-		}
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			rest = append(rest, a)
-			continue
-		}
-		name := strings.TrimLeft(a, "-")
-		name, _, inline := strings.Cut(name, "=")
-		f := fs.Lookup(name)
-		if f == nil {
-			rest = append(rest, a)
-			continue
-		}
-		flags = append(flags, a)
-		isBool := false
-		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
-			isBool = bf.IsBoolFlag()
-		}
-		if !inline && !isBool && i+1 < len(args) {
-			flags = append(flags, args[i+1])
-			i++
-		}
-	}
-	return append(flags, rest...)
-}
-
 func parseIDs(args []string) ([]int, error) {
 	if len(args) == 0 {
 		return nil, usageErr("at least one task id is required")
@@ -381,26 +275,10 @@ func parseIDs(args []string) ([]int, error) {
 
 // --- add ------------------------------------------------------------------
 
-func (c *cli) add(args []string) error {
-	fs := c.flags("add")
-	var desc, prio, due, labels, who, col string
-	fs.StringVar(&desc, "d", "", "description")
-	fs.StringVar(&desc, "desc", "", "description")
-	fs.StringVar(&prio, "p", "", "priority: low, medium, high, urgent")
-	fs.StringVar(&prio, "priority", "", "priority")
-	fs.StringVar(&due, "due", "", "due date: 2026-09-10, today, tomorrow, fri, +3d")
-	fs.StringVar(&labels, "l", "", "comma separated labels")
-	fs.StringVar(&labels, "labels", "", "comma separated labels")
-	fs.StringVar(&who, "a", "", "assignee")
-	fs.StringVar(&who, "assignee", "", "assignee")
-	fs.StringVar(&col, "c", "", "column (default: first)")
-	fs.StringVar(&col, "column", "", "column")
-	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
-		return errUsage
-	}
-	title := strings.TrimSpace(strings.Join(fs.Args(), " "))
+func (c *cli) add(o addOpts, title string) error {
+	desc, prio, due, labels, who, col := o.desc, o.prio, o.due, o.labels, o.who, o.col
 	if title == "" {
-		return usageErr("kancli add [-d desc] [-p prio] [-due date] [-l labels] [-a who] [-c column] <title>")
+		return usageErr("a title is required")
 	}
 	b, err := c.env.board()
 	if err != nil {
@@ -435,20 +313,8 @@ func (c *cli) add(args []string) error {
 
 // --- list -----------------------------------------------------------------
 
-func (c *cli) list(args []string) error {
-	fs := c.flags("list")
-	var col, q, sortBy string
-	var asJSON, archived, all bool
-	fs.StringVar(&col, "c", "", "only this column")
-	fs.StringVar(&col, "column", "", "only this column")
-	fs.StringVar(&q, "q", "", "search query (same syntax as the UI)")
-	fs.StringVar(&sortBy, "sort", "manual", "manual, priority, due, created, updated or title")
-	fs.BoolVar(&asJSON, "json", false, "print JSON")
-	fs.BoolVar(&archived, "archived", false, "list archived tasks instead")
-	fs.BoolVar(&all, "all", false, "include archived tasks")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) list(o listOpts) error {
+	col, q, sortBy, asJSON, archived, all := o.col, o.query, o.sortBy, o.asJSON, o.archived, o.all
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -622,9 +488,6 @@ func indent(s string) string {
 // --- move / done / archive / rm ---------------------------------------------
 
 func (c *cli) move(args []string) error {
-	if len(args) != 2 {
-		return usageErr("kancli move <id> <column>")
-	}
 	ids, err := parseIDs(args[:1])
 	if err != nil {
 		return err
@@ -697,9 +560,6 @@ func (c *cli) archive(args []string, archive bool) error {
 }
 
 func (c *cli) link(args []string) error {
-	if len(args) != 3 {
-		return usageErr("kancli link <id> <blocks|blocked-by|subtask-of|parent-of|relates> <id>")
-	}
 	ids, err := parseIDs([]string{args[0], args[2]})
 	if err != nil {
 		return err
@@ -723,9 +583,6 @@ func (c *cli) link(args []string) error {
 }
 
 func (c *cli) unlink(args []string) error {
-	if len(args) != 2 {
-		return usageErr("kancli unlink <id> <id>")
-	}
 	ids, err := parseIDs(args)
 	if err != nil {
 		return err
@@ -769,16 +626,7 @@ func (c *cli) remove(args []string) error {
 
 // --- due ------------------------------------------------------------------
 
-func (c *cli) due(args []string) error {
-	fs := c.flags("due")
-	var days int
-	var notify, quiet bool
-	fs.IntVar(&days, "days", 0, "also include tasks due within N days")
-	fs.BoolVar(&notify, "notify", false, "send a desktop notification when something is due")
-	fs.BoolVar(&quiet, "q", false, "print nothing, only exit 1 when something is due")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) due(days int, notify, quiet bool) error {
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -875,19 +723,8 @@ func formatFromPath(path, explicit string) string {
 	}
 }
 
-func (c *cli) export(args []string) error {
-	fs := c.flags("export")
-	var format, out string
-	var all bool
-	var events bool
-	fs.StringVar(&format, "f", "", "json, csv, md or parquet (default from -o extension, else json)")
-	fs.StringVar(&format, "format", "", "json, csv, md or parquet")
-	fs.StringVar(&out, "o", "", "output file (default: stdout; required for parquet)")
-	fs.BoolVar(&all, "all", false, "json only: export every board, not just the current one")
-	fs.BoolVar(&events, "events", false, "parquet only: export the event log instead of tasks")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
+func (c *cli) export(o exportOpts) error {
+	format, out, all, events := o.format, o.out, o.all, o.events
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -1022,20 +859,7 @@ func formatMarkdown(b *board.Board) string {
 	return sb.String()
 }
 
-func (c *cli) importCmd(args []string) error {
-	fs := c.flags("import")
-	var format, col string
-	fs.StringVar(&format, "f", "", "json, csv or md (default from the file extension)")
-	fs.StringVar(&format, "format", "", "json, csv or md")
-	fs.StringVar(&col, "c", "", "default column for tasks without one")
-	fs.StringVar(&col, "column", "", "default column")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
-	}
-	if fs.NArg() != 1 {
-		return usageErr("kancli import [-f json|csv|md] [-c column] <file>")
-	}
-	path := fs.Arg(0)
+func (c *cli) importTasks(format, col, path string) error {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -1271,83 +1095,80 @@ func applyMeta(t *board.Task, meta string) {
 
 // --- boards / columns / config / keys ------------------------------------
 
-func (c *cli) boards(args []string) error {
+func (c *cli) boardsList() error {
 	f := c.env.File
-	if len(args) == 0 {
-		for _, b := range f.Boards {
-			mark := " "
-			if b.ID == f.ActiveBoard {
-				mark = "*"
-			}
-			n := len(b.Live())
-			fmt.Fprintf(c.stdout, "%s %-20s %d task%s\n", mark, b.Name, n, board.Plural(n))
+	for _, b := range f.Boards {
+		mark := " "
+		if b.ID == f.ActiveBoard {
+			mark = "*"
 		}
-		return nil
-	}
-	switch args[0] {
-	case "new", "add":
-		if len(args) < 2 {
-			return usageErr("kancli boards new <name>")
-		}
-		b, err := f.AddBoard(strings.Join(args[1:], " "))
-		if err != nil {
-			return err
-		}
-		f.Activate(b.ID) //nolint:errcheck // just created
-		if err := c.Save(); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.stdout, "Created board %q\n", b.Name)
-	case "use", "switch":
-		if len(args) < 2 {
-			return usageErr("kancli boards use <name>")
-		}
-		b := f.Board(strings.Join(args[1:], " "))
-		if b == nil {
-			return fmt.Errorf("no board %q", strings.Join(args[1:], " "))
-		}
-		f.Activate(b.ID) //nolint:errcheck // board exists
-		if err := c.Save(); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.stdout, "Switched to %q\n", b.Name)
-	case "rename":
-		if len(args) != 3 {
-			return usageErr("kancli boards rename <old> <new>")
-		}
-		b := f.Board(args[1])
-		if b == nil {
-			return fmt.Errorf("no board %q", args[1])
-		}
-		if err := f.RenameBoard(b.ID, args[2]); err != nil {
-			return err
-		}
-		if err := c.Save(); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.stdout, "Renamed to %q\n", b.Name)
-	case "rm", "delete":
-		if len(args) < 2 {
-			return usageErr("kancli boards rm <name>")
-		}
-		b := f.Board(strings.Join(args[1:], " "))
-		if b == nil {
-			return fmt.Errorf("no board %q", strings.Join(args[1:], " "))
-		}
-		if err := f.RemoveBoard(b.ID); err != nil {
-			return err
-		}
-		if err := c.Save(); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.stdout, "Deleted board %q\n", b.Name)
-	default:
-		return usageErr("kancli boards [new|use|rename|rm] ...")
+		n := len(b.Live())
+		fmt.Fprintf(c.stdout, "%s %-20s %d task%s\n", mark, b.Name, n, board.Plural(n))
 	}
 	return nil
 }
 
-func (c *cli) columns(args []string) error {
+func (c *cli) boardsNew(name string) error {
+	f := c.env.File
+	b, err := f.AddBoard(name)
+	if err != nil {
+		return err
+	}
+	f.Activate(b.ID) //nolint:errcheck // just created
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Created board %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) boardsUse(name string) error {
+	f := c.env.File
+	b := f.Board(name)
+	if b == nil {
+		return fmt.Errorf("no board %q", name)
+	}
+	f.Activate(b.ID) //nolint:errcheck // board exists
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Switched to %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) boardsRename(from, to string) error {
+	f := c.env.File
+	b := f.Board(from)
+	if b == nil {
+		return fmt.Errorf("no board %q", from)
+	}
+	if err := f.RenameBoard(b.ID, to); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Renamed to %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) boardsRemove(name string) error {
+	f := c.env.File
+	b := f.Board(name)
+	if b == nil {
+		return fmt.Errorf("no board %q", name)
+	}
+	if err := f.RemoveBoard(b.ID); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Deleted board %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) columns() error {
 	b, err := c.env.board()
 	if err != nil {
 		return err
@@ -1364,7 +1185,7 @@ func (c *cli) columns(args []string) error {
 	return tw.Flush()
 }
 
-func (c *cli) config(args []string) error {
+func (c *cli) config() error {
 	path := c.env.Opts.configPath
 	if path == "" {
 		path, _ = config.DefaultPath()
@@ -1380,7 +1201,7 @@ func (c *cli) config(args []string) error {
 	return nil
 }
 
-func (c *cli) keys(args []string) error {
+func (c *cli) keys() error {
 	k := ui.DefaultKeyMap()
 	k.ApplyOverrides(c.env.Cfg.Keys) //nolint:errcheck // validated on load
 	acts := k.Actions()

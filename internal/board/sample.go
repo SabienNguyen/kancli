@@ -27,7 +27,7 @@ func SampleFile() *File {
 	}
 
 	// Day 0: the board is set up.
-	t1 := add("todo", "Write the release notes", "Cover the new search syntax, undo and the CLI.\nLink to the changelog.", PriorityHigh, day(1), []string{"docs"}, "sam")
+	t1 := add("todo", "Write the release notes", "Cover the **new search syntax**, undo and the CLI.\n\n- link to the changelog\n- mention `kancli review`\n- screenshots of the *stats* view", PriorityHigh, day(1), []string{"docs"}, "sam")
 	step(2)
 	add("todo", "Fix the flaky terminal resize test", "", PriorityMedium, day(-2), []string{"bug", "tests"}, "")
 	step(1)

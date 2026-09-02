@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -17,7 +15,7 @@ import (
 // Options are the flags accepted before a subcommand.
 type Options struct {
 	file, board, theme, configPath, asOf string
-	ascii, compact, demo, version        bool
+	ascii, compact, demo, noAnim         bool
 }
 
 // Env is everything a command needs: config, store and loaded data.
@@ -30,109 +28,6 @@ type Env struct {
 	File     *board.File
 	ReadOnly bool
 	AsOf     time.Time
-}
-
-func usage(w io.Writer) {
-	fmt.Fprintf(w, `kancli — a kanban board for your terminal
-
-Usage:
-  kancli [flags]                  open the board
-  kancli [flags] <command> [args] run a command without the UI
-
-Commands:
-  add <title...>       add a task (-d, -p, -due, -l, -a, -c)
-  list                 list tasks (-c, -q, -json, -archived)
-  show <id>            show one task
-  move <id> <column>   move a task
-  done <id...>         move tasks to the last column
-  archive <id...>      archive tasks
-  restore <id...>      restore archived tasks
-  rm <id...>           delete tasks permanently
-  link <id> <kind> <id>  link tasks: blocks, blocked-by, subtask-of, parent-of, relates
-  unlink <id> <id>     remove every link between two tasks
-  due                  list overdue and due-today tasks (-days, -notify)
-  stats                cycle time, throughput, WIP and aging (-days, -json, -q SQL)
-  review               Markdown review of the last week (-days, -o)
-  log                  recent events (-n, -task)
-  export               write the board as json, csv, markdown or parquet (-f, -o)
-  import <file>        read tasks from json, csv or markdown (-f, -c)
-  boards               list boards; boards new|use|rename|rm <name>
-  columns              list the columns of the board
-  compact              fold the event log into a fresh snapshot
-  config               show the config file location and an example
-  keys                 list configurable key actions
-  version              print the version
-
-Add -as-of DATE before a command (or the UI) to see the board as it was.
-
-Flags:
-`)
-}
-
-func Main(version string, args []string, stdout, stderr io.Writer, launch func(*Env) error) int {
-	var o Options
-	fs := flag.NewFlagSet("kancli", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.StringVar(&o.file, "file", "", "data file (default: $KANCLI_FILE, config, or the user data dir)")
-	fs.StringVar(&o.file, "f", "", "shorthand for -file")
-	fs.StringVar(&o.board, "board", "", "board to open (name or id)")
-	fs.StringVar(&o.board, "b", "", "shorthand for -board")
-	fs.StringVar(&o.theme, "theme", "", "colour theme: default, high-contrast or mono")
-	fs.StringVar(&o.configPath, "config", "", "config file (default: $KANCLI_CONFIG or the user config dir)")
-	fs.BoolVar(&o.ascii, "ascii", false, "draw borders with ASCII characters")
-	fs.BoolVar(&o.compact, "compact", false, "two-line cards")
-	fs.BoolVar(&o.demo, "demo", false, "use sample data and don't save anything")
-	fs.StringVar(&o.asOf, "as-of", "", "read-only view of the board at a date or time (2026-08-25, yesterday, -7d)")
-	fs.BoolVar(&o.version, "version", false, "print the version and exit")
-	fs.Usage = func() {
-		usage(stderr)
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return 0
-		}
-		return 2
-	}
-	if o.version {
-		fmt.Fprintln(stdout, "kancli", version)
-		return 0
-	}
-
-	rest := fs.Args()
-	if len(rest) > 0 && (rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help") {
-		fs.Usage()
-		return 0
-	}
-	if len(rest) > 0 && rest[0] == "version" {
-		fmt.Fprintln(stdout, "kancli", version)
-		return 0
-	}
-
-	actor := "ui"
-	if len(rest) > 0 {
-		actor = "cli"
-	}
-	e, err := NewEnv(o, actor)
-	if err != nil {
-		fmt.Fprintf(stderr, "kancli: %v\n", err)
-		return 1
-	}
-
-	if len(rest) > 0 {
-		c := &cli{env: e, stdout: stdout, stderr: stderr}
-		return c.run(rest[0], rest[1:])
-	}
-
-	if launch == nil {
-		fmt.Fprintln(stderr, "kancli: no command given (see `kancli help`)")
-		return 2
-	}
-	if err := launch(e); err != nil {
-		fmt.Fprintf(stderr, "kancli: %v\n", err)
-		return 1
-	}
-	return 0
 }
 
 // NewEnv loads the config, resolves the data file and reads it. actor is
@@ -154,6 +49,7 @@ func NewEnv(o Options, actor string) (*Env, error) {
 	}
 	cfg.ASCII = cfg.ASCII || o.ascii
 	cfg.Compact = cfg.Compact || o.compact
+	cfg.NoAnimations = cfg.NoAnimations || o.noAnim
 	if o.board != "" {
 		cfg.Board = o.board
 	}

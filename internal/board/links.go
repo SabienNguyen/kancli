@@ -359,8 +359,13 @@ func Mentions(text string) []int {
 	return out
 }
 
-// linkMentions turns #N mentions in text into "relates to" links.
+// linkMentions turns #N mentions in text into "relates to" links. During
+// replay it does nothing: the links it created were logged as their own
+// link.added events, which follow in the log with their own timestamps.
 func (b *Board) linkMentions(from int, text string) {
+	if b.rec != nil && b.rec.muted {
+		return
+	}
 	for _, id := range Mentions(text) {
 		if id != from && b.Task(id) != nil {
 			_ = b.AddLink(from, LinkRelates, id)

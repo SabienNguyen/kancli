@@ -1,0 +1,22 @@
+ Kancli · Demo       sort: priority · demo mode · changes are not saved 
+╭──────────────────────╮╭──────────────────────╮╭──────────────────────╮
+│    To Do 4           ││    In Progress 2/2   ││    Done 2            │
+│                      ││                      ││                      │
+│ │ #1 ↑ Write the re… ││ │ #5 ‼ Ship the CLI… ││ │ #8 ↓ Stay cool     │
+│ │ Cover the new sea… ││ │ add, list, move, … ││ │ as a cucumber      │
+│ │ Sep 3 · @sam · +d… ││ │ Sep 2 · @sam · +f… ││ │                    │
+│                      ││                      ││                      │
+│   #2 • Fix the flak… ││   #6 • Review the m… ││   #7 Upgrade to Bub… │
+│                      ││                      ││                      │
+│   in 6d · +bug · +t… ││   Sep 5 · @alex · +… ││   +chore             │
+│                      ││                      ││                      │
+│   #4 ↓ Plan the tea… ││                      ││                      │
+│   Venue, agenda and… ││                      ││                      │
+│   Sep 22 · @alex · … ││                      ││                      │
+│                      ││                      ││                      │
+│                      ││                      ││                      │
+│                      ││                      ││                      │
+│                      ││                      ││                      │
+│   ••                 ││                      ││                      │
+╰──────────────────────╯╰──────────────────────╯╰──────────────────────╯
+ n new task • enter/v view • e edit • L/⇧→ move right • / search …      
