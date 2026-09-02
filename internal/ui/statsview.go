@@ -106,6 +106,9 @@ func (v *statsView) render() {
 	if s.Overdue > 0 {
 		line = append(line, num("overdue", s.Overdue, st.err))
 	}
+	if s.Blocked > 0 {
+		line = append(line, num("blocked", s.Blocked, st.err))
+	}
 	if s.DueToday > 0 {
 		line = append(line, num("due today", s.DueToday, st.warning))
 	}

@@ -4,6 +4,13 @@
 
 ### Added
 
+- Links between tasks: blocks / blocked by, subtask / parent, relates to.
+  Blocked marker on cards and in the header, subtask progress on parents,
+  automatic links from `#12` mentions, a warning when finishing a task with
+  open subtasks or blockers, `l`/`g`/`X` in the task view, `kancli link`
+  and `kancli unlink`, and `blocked:`, `blocks:`, `blockedby:`, `parent:`
+  and `has:` search terms.
+
 - Event-sourced storage: every change is appended to `board.events.jsonl`;
   snapshots are written on quit, `ctrl+s`, `kancli compact` or every 500
   events, and archived segments keep the full history.

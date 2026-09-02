@@ -66,6 +66,7 @@ type Stats struct {
 	Live        int            `json:"live"`
 	InProgress  int            `json:"in_progress"`
 	Overdue     int            `json:"overdue"`
+	Blocked     int            `json:"blocked"`
 	DueToday    int            `json:"due_today"`
 	Finished    []FinishedTask `json:"finished"`
 	CycleMean   time.Duration  `json:"cycle_mean"`
@@ -288,6 +289,7 @@ func (w *StatsWalker) Finish(b *Board, now time.Time, days int) Stats {
 	done := w.done
 
 	// Headline counts from the live board.
+	st.Blocked = b.BlockedCount()
 	for _, t := range b.Live() {
 		st.Live++
 		if w.isWIP(t.Column) {

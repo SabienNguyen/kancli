@@ -30,6 +30,7 @@ type cardDelegate struct {
 	color   lipgloss.TerminalColor
 	marks   map[int]bool
 	now     time.Time
+	board   *board.Board
 }
 
 func (d cardDelegate) Height() int {
@@ -88,6 +89,9 @@ func (d cardDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 		head.WriteString(d.st.mark.Render(d.g.mark) + " ")
 	}
 	head.WriteString(d.st.muted.Render(t.Ref()) + " ")
+	if d.board != nil && d.board.IsBlocked(t.ID) {
+		head.WriteString(d.st.err.Render(d.g.blocked) + " ")
+	}
 	if p := d.g.priority(t.Priority); p != "" {
 		head.WriteString(lipgloss.NewStyle().Foreground(th.priorityColor(t.Priority)).Bold(true).Render(p) + " ")
 	}
@@ -135,8 +139,23 @@ func (d cardDelegate) metaLine(t board.Task, width int) string {
 		}
 		parts = append(parts, s.Render(fmt.Sprintf("%s %d/%d", d.g.checked, done, total)))
 	}
+	if d.board != nil {
+		if done, total := d.board.SubtaskProgress(t.ID); total > 0 {
+			s := d.st.muted
+			if done == total {
+				s = d.st.success
+			}
+			parts = append(parts, s.Render(fmt.Sprintf("%d/%d subtask%s", done, total, board.Plural(total))))
+		}
+		if p := d.board.Parent(t.ID); p != nil {
+			parts = append(parts, d.st.muted.Render(d.g.subtask+" "+p.Ref()))
+		}
+		if bl := d.board.Blockers(t.ID); len(bl) > 0 {
+			parts = append(parts, d.st.err.Render("blocked by "+bl[0].Ref()))
+		}
+	}
 	if n := len(t.Attachments); n > 0 {
-		parts = append(parts, d.st.muted.Render(fmt.Sprintf("%d link%s", n, board.Plural(n))))
+		parts = append(parts, d.st.muted.Render(fmt.Sprintf("%d attachment%s", n, board.Plural(n))))
 	}
 	if n := len(t.Comments); n > 0 {
 		parts = append(parts, d.st.muted.Render(fmt.Sprintf("%d comment%s", n, board.Plural(n))))

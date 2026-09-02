@@ -45,6 +45,10 @@ files on your machine; there is no server or account.
 - **Search** across every column and field, ranked by relevance, with
   structured filters. **Sort** modes, **multi-select** bulk actions,
   **undo/redo**, an **archive**, and **mouse** support.
+- **Links between tasks**: blocks / blocked by, subtask / parent, and
+  relates to. Blocked cards are marked, parents show subtask progress,
+  `#12` in a description or comment links automatically, and finishing a
+  task with open subtasks or blockers warns you.
 - **Similar-task detection** warns when you add something that looks like an
   existing task and lists look-alikes on the task page.
 - **Stats**: cycle time, time per column, weekly throughput, work in
@@ -144,11 +148,30 @@ cancels. The priority field cycles with `←`/`→`. The due date accepts
 `2026-09-10`, `today`, `tomorrow`, `fri`, `+3d`, `+2w` or `+1m` and shows
 what it parsed to.
 
-In the **task view**, `tab` steps through checklist items and attachments,
-`space` toggles an item, `X` removes it, `t` adds a checklist item, `c` adds a
-comment, `A` attaches a link or path, `o` opens the attachment, `e` edits,
-`H`/`L` move the task, `a` archives, `d` deletes and `esc` goes back. The
-page also lists similar tasks and the task's full activity.
+In the **task view**, `tab` steps through checklist items, attachments and
+links, `space` toggles a checklist item, `X` removes the item or link under
+the cursor, `t` adds a checklist item, `c` adds a comment, `A` attaches a
+link or path, `o` opens the attachment, `l` links another task, `g` jumps
+to the linked task under the cursor, `e` edits, `H`/`L` move the task, `a`
+archives, `d` deletes and `esc` goes back. The page also lists similar
+tasks and the task's full activity.
+
+### Links
+
+Tasks can point at each other in three ways:
+
+| You type (`l` in the task view, or `kancli link A <kind> B`) | Meaning |
+| --- | --- |
+| `blocks 15` / `blocked-by 15` | this task blocks #15 / is blocked by #15 |
+| `subtask-of 3` / `parent-of 7` | this task is a subtask of #3 / #7 is its subtask |
+| `relates 9` | related, no direction |
+
+A task with an unfinished blocker shows a blocked marker on its card and in
+the header count; the blocker is finished once it reaches the last column
+or is archived. Parents show `2/5 subtasks` on the card. Writing `#12` in a
+description or comment creates a "relates to" link automatically. Moving a
+task to the last column while it has open subtasks or blockers still works
+but warns you. Cycles (A blocks B blocks A) are refused.
 
 In the **stats screen**, `j`/`k` scroll, `w` cycles the window between 30, 90
 and 365 days, `r` refreshes and `esc` goes back.
@@ -167,6 +190,10 @@ narrow by field:
 p:high       priority: none, low, medium, high, urgent
 due:today    also tomorrow, overdue, week, none, or a date
 col:done     column name or id
+blocked:yes  tasks with an unfinished blocker (blocked:no for the rest)
+blocks:12    tasks that block #12; blockedby:12 for the reverse
+parent:3     subtasks of #3
+has:subtasks also has:blockers, has:links, has:parent, has:due, has:checklist
 ```
 
 Terms combine: `+bug due:week @sam` finds Sam's bugs due this week.
@@ -231,6 +258,8 @@ kancli move 12 done
 kancli done 12 13                 # move to the last column
 kancli archive 12 && kancli restore 12
 kancli rm 12
+kancli link 12 blocked-by 15      # blocks, blocked-by, subtask-of, parent-of, relates
+kancli unlink 12 15
 kancli due                        # overdue and due-today tasks
 kancli due -days 7 -notify        # desktop notification when something is due
 kancli stats                      # cycle time, throughput, WIP, aging
@@ -436,7 +465,8 @@ An event line looks like this:
 Kinds: `task.created|updated|moved|reordered|deleted|archived|restored`,
 `comment.added`, `checklist.added|toggled|removed`,
 `attachment.added|removed`, `column.added|updated|removed|moved`,
-`board.added|renamed|removed|activated|restored` (the last is an undo).
+`board.added|renamed|removed|activated|restored` (the last is an undo),
+`link.added|removed`.
 
 ## DuckDB
 

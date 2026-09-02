@@ -167,16 +167,16 @@ func NewStyles(th Theme, ascii bool) Styles {
 
 // glyphs are the symbols used on cards, with ASCII fallbacks.
 type Glyphs struct {
-	mark, unmarked, checked, unchecked, urgent, high, medium, low, ellipsis, dot string
+	mark, unmarked, checked, unchecked, urgent, high, medium, low, ellipsis, dot, blocked, subtask string
 }
 
 func NewGlyphs(ascii bool) Glyphs {
 	if ascii {
 		return Glyphs{mark: "*", unmarked: " ", checked: "[x]", unchecked: "[ ]",
-			urgent: "!!", high: "!", medium: "-", low: "v", ellipsis: "...", dot: "*"}
+			urgent: "!!", high: "!", medium: "-", low: "v", ellipsis: "...", dot: "*", blocked: "[blocked]", subtask: "->"}
 	}
 	return Glyphs{mark: "✓", unmarked: " ", checked: "☑", unchecked: "☐",
-		urgent: "‼", high: "↑", medium: "•", low: "↓", ellipsis: "…", dot: "·"}
+		urgent: "‼", high: "↑", medium: "•", low: "↓", ellipsis: "…", dot: "·", blocked: "⛔", subtask: "↳"}
 }
 
 func (g Glyphs) priority(p board.Priority) string {

@@ -138,6 +138,7 @@ type Task struct {
 	Assignee    string          `json:"assignee,omitempty"`
 	Checklist   []ChecklistItem `json:"checklist,omitempty"`
 	Attachments []string        `json:"attachments,omitempty"`
+	Links       []Link          `json:"links,omitempty"`
 	Comments    []Comment       `json:"comments,omitempty"`
 	History     []HistoryEntry  `json:"history,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
@@ -510,8 +511,10 @@ func (b *Board) AddTask(t Task) (*Task, error) {
 	b.Tasks = append(b.Tasks, t)
 	b.touch()
 	added := &b.Tasks[len(b.Tasks)-1]
+	added.Links = nil // links are only ever created through AddLink
 	b.emit(Event{Kind: EvTaskCreated, Task: t.ID, To: t.Column, Data: MustJSON(*added)})
-	return added, nil
+	b.linkMentions(t.ID, t.Description)
+	return b.Task(t.ID), nil
 }
 
 // UpdateTask replaces the editable fields of a task and records what
@@ -553,12 +556,16 @@ func (b *Board) UpdateTask(u Task) error {
 			changes = append(changes, "assigned to "+u.Assignee)
 		}
 	}
+	descChanged := u.Description != t.Description
 	t.Title, t.Description, t.Priority, t.Due = u.Title, u.Description, u.Priority, u.Due
 	t.Labels, t.Assignee = u.Labels, u.Assignee
 	if len(changes) > 0 {
 		t.UpdatedAt = b.now()
 		t.logAt(t.UpdatedAt, "Edited: %s", strings.Join(changes, "; "))
 		b.emit(Event{Kind: EvTaskUpdated, Task: t.ID, Text: strings.Join(changes, "; "), Data: MustJSON(*t)})
+	}
+	if descChanged {
+		b.linkMentions(t.ID, t.Description)
 	}
 	return nil
 }
@@ -624,6 +631,7 @@ func (b *Board) DeleteTask(id int) bool {
 	col := b.Tasks[i].Column
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.touch()
+	b.dropLinksTo(id)
 	b.emit(Event{Kind: EvTaskDeleted, Task: id, From: col})
 	return true
 }
@@ -695,6 +703,7 @@ func (b *Board) AddComment(id int, text string) error {
 	t.UpdatedAt = now
 	t.logAt(now, "Commented")
 	b.emit(Event{Kind: EvCommentAdded, Task: id, Text: text})
+	b.linkMentions(id, text)
 	return nil
 }
 

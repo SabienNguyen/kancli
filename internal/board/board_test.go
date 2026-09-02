@@ -583,3 +583,137 @@ func TestDecodeFileWithoutVersionOrWithNullBoard(t *testing.T) {
 		t.Errorf("all-null boards should yield a default board: %v %v", f, err)
 	}
 }
+
+func TestLinks(t *testing.T) {
+	b := newTestBoard()
+	if err := b.AddLink(1, LinkBlocks, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.AddLink(1, LinkBlocks, 2); err != nil {
+		t.Fatal("duplicate link should be ignored")
+	}
+	if got := len(b.Task(1).Links); got != 1 {
+		t.Errorf("links on #1 = %d, want 1", got)
+	}
+	if err := b.AddLink(2, LinkBlocks, 1); err == nil {
+		t.Error("cycle should be refused")
+	}
+	if err := b.AddLink(1, LinkBlocks, 1); err == nil {
+		t.Error("self link should be refused")
+	}
+	if err := b.AddLink(1, LinkBlocks, 99); err == nil {
+		t.Error("link to a missing task should be refused")
+	}
+	if !b.IsBlocked(2) || b.IsBlocked(1) {
+		t.Error("#2 should be blocked by #1")
+	}
+	rels := b.Relations(2)
+	if len(rels) != 1 || rels[0].Label != "blocked by" || rels[0].Task.ID != 1 || rels[0].Outgoing {
+		t.Errorf("relations of #2 = %+v", rels)
+	}
+	// Finishing the blocker unblocks.
+	b.MoveTask(1, "done") //nolint:errcheck // test data
+	if b.IsBlocked(2) {
+		t.Error("a blocker in Done should not block")
+	}
+
+	// Subtasks and progress.
+	b.AddLink(3, LinkSubtaskOf, 4) //nolint:errcheck // test data
+	b.AddLink(5, LinkSubtaskOf, 4) //nolint:errcheck // test data
+	if p := b.Parent(3); p == nil || p.ID != 4 {
+		t.Error("parent lookup failed")
+	}
+	if done, total := b.SubtaskProgress(4); total != 2 || done != 0 {
+		t.Errorf("progress = %d/%d", done, total)
+	}
+	b.ArchiveTask(5)
+	if done, _ := b.SubtaskProgress(4); done != 1 {
+		t.Error("archived subtask should count as finished")
+	}
+	if err := b.AddLink(4, LinkSubtaskOf, 3); err == nil {
+		t.Error("subtask cycle should be refused")
+	}
+
+	// Relates is symmetric and de-duplicated.
+	b.AddLink(6, LinkRelates, 7) //nolint:errcheck // test data
+	b.AddLink(7, LinkRelates, 6) //nolint:errcheck // test data
+	if len(b.Task(6).Links)+len(b.Task(7).Links) != 1 {
+		t.Error("relates should be stored once")
+	}
+	if n := b.RemoveLinksBetween(7, 6); n != 1 || len(b.Relations(6)) != 0 {
+		t.Errorf("RemoveLinksBetween removed %d", n)
+	}
+
+	// Deleting a task drops links pointing at it.
+	b.DeleteTask(4)
+	if len(b.Task(3).Links) != 0 {
+		t.Error("links to a deleted task should be dropped")
+	}
+	if b.BlockedCount() != 0 {
+		t.Errorf("blocked count = %d", b.BlockedCount())
+	}
+}
+
+func TestLinkSpecAndMentions(t *testing.T) {
+	cases := []struct {
+		word     string
+		from, to int
+		kind     LinkKind
+	}{
+		{"blocks", 1, 2, LinkBlocks}, {"blocked-by", 2, 1, LinkBlocks}, {"subtask-of", 1, 2, LinkSubtaskOf},
+		{"parent-of", 2, 1, LinkSubtaskOf}, {"relates", 1, 2, LinkRelates}, {"Blocked By", 2, 1, LinkBlocks},
+	}
+	for _, c := range cases {
+		from, kind, to, err := ParseLinkSpec(1, c.word, 2)
+		if err != nil || from != c.from || to != c.to || kind != c.kind {
+			t.Errorf("ParseLinkSpec(1, %q, 2) = %d %s %d %v", c.word, from, kind, to, err)
+		}
+	}
+	if _, _, _, err := ParseLinkSpec(1, "hates", 2); err == nil {
+		t.Error("unknown kind should fail")
+	}
+	if got := Mentions("see #3 and #12, not &#4 or #x"); len(got) != 2 || got[0] != 3 || got[1] != 12 {
+		t.Errorf("Mentions = %v", got)
+	}
+
+	b := newTestBoard()
+	tk, _ := b.AddTask(Task{Title: "follow up", Description: "after #1 and #2 land"})
+	rels := b.Relations(tk.ID)
+	if len(rels) != 2 || rels[0].Label != "relates to" {
+		t.Errorf("mentions should create relates links: %+v", rels)
+	}
+	b.AddComment(3, "blocked on #1") //nolint:errcheck // test data
+	if len(b.Relations(3)) != 1 {
+		t.Error("comment mention should link")
+	}
+
+	// Links replay from events exactly.
+	f := NewFile()
+	nb := f.Boards[0]
+	fixed := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	nb.SetClock(func() time.Time { return fixed })
+	nb.AddTask(Task{Title: "a"})  //nolint:errcheck // test data
+	nb.AddTask(Task{Title: "b"})  //nolint:errcheck // test data
+	nb.AddLink(1, LinkBlocks, 2)  //nolint:errcheck // test data
+	nb.AddLink(2, LinkRelates, 1) //nolint:errcheck // test data
+	nb.RemoveLink(2, LinkRelates, 1)
+	events := f.Pending()
+	replayed := NewFile()
+	for i := range events {
+		events[i].Seq = int64(i + 1)
+	}
+	if err := replayed.Replay(events); err != nil {
+		t.Fatal(err)
+	}
+	if stateOf(replayed) != stateOf(f) {
+		t.Errorf("replayed links differ:\n%s\n%s", stateOf(replayed), stateOf(f))
+	}
+
+	q := ParseQuery("blocked:yes")
+	if !q.Matches(nb, *nb.Task(2), Now()) || q.Matches(nb, *nb.Task(1), Now()) {
+		t.Error("blocked:yes query")
+	}
+	if !ParseQuery("blocks:2").Matches(nb, *nb.Task(1), Now()) || !ParseQuery("has:links").Matches(nb, *nb.Task(2), Now()) {
+		t.Error("blocks:/has: queries")
+	}
+}

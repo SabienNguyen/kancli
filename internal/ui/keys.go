@@ -162,18 +162,18 @@ var formKeys = formKeyMap{
 // detailKeyMap holds the task detail view bindings.
 type detailKeyMap struct {
 	Scroll, Item, Toggle, RemoveItem, AddItem, Comment, Attach, Open key.Binding
-	Edit, MoveLeft, MoveRight, Archive, Delete, Back                 key.Binding
+	Link, Go, Edit, MoveLeft, MoveRight, Archive, Delete, Back       key.Binding
 }
 
 func (k detailKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Edit, k.Comment, k.AddItem, k.Toggle, k.Open, k.Back}
+	return []key.Binding{k.Edit, k.Comment, k.AddItem, k.Link, k.Go, k.Toggle, k.Back}
 }
 
 func (k detailKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Scroll, k.Item, k.Toggle, k.RemoveItem},
 		{k.AddItem, k.Comment, k.Attach, k.Open},
-		{k.Edit, k.MoveLeft, k.MoveRight, k.Archive, k.Delete, k.Back},
+		{k.Link, k.Go, k.Edit, k.MoveLeft, k.MoveRight, k.Archive, k.Delete, k.Back},
 	}
 }
 
@@ -186,6 +186,8 @@ var detailKeys = detailKeyMap{
 	Comment:    bind("c", "comment", "c"),
 	Attach:     bind("A", "attach link", "A"),
 	Open:       bind("o", "open attachment", "o"),
+	Link:       bind("l", "link task", "l"),
+	Go:         bind("g", "go to linked task", "g"),
 	Edit:       bind("e", "edit", "e"),
 	MoveLeft:   bind("H", "move left", "H", "shift+left", "["),
 	MoveRight:  bind("L", "move right", "L", "shift+right", "]"),

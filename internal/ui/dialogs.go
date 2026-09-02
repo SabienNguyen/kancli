@@ -24,6 +24,7 @@ const (
 	promptComment
 	promptChecklistItem
 	promptAttachment
+	promptLink
 )
 
 // promptSubmitMsg carries the text entered into a prompt.
