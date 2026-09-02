@@ -118,9 +118,11 @@ func (f *taskForm) setSize(width, height int) {
 	inner = min(max(inner, formMinWidth), formMaxWidth)
 	f.title.Width = inner - 1
 	// Inline fields share their row with a 10-column label.
-	for _, ti := range []*textinput.Model{&f.due, &f.labels, &f.assignee} {
+	for _, ti := range []*textinput.Model{&f.labels, &f.assignee} {
 		ti.Width = max(8, inner-11)
 	}
+	// The due field is short so its parsed preview fits beside it.
+	f.due.Width = min(28, max(8, inner-11))
 	f.desc.SetWidth(inner)
 	descHeight := height - f.st.dialog.GetVerticalFrameSize() - formFixedRows
 	f.desc.SetHeight(min(max(descHeight, formMinDescHeight), formMaxDescHeight))
