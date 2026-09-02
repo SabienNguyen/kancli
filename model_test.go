@@ -1,547 +1,681 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-func init() {
-	statusDuration = 0
-}
-
-const (
-	testWidth  = 120
-	testHeight = 36
-)
-
-// newTestBoard returns a sized board backed by a temp file.
-func newTestBoard(t *testing.T) (Board, store) {
+func assertFits(t *testing.T, m app, label string) {
 	t.Helper()
-	st := newStore(filepath.Join(t.TempDir(), "board.json"))
-	m := newBoard(st, sampleTasks())
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
-	return mm.(Board), st
-}
-
-func keyMsg(k string) tea.KeyMsg {
-	switch k {
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyMsg{Type: tea.KeyShiftTab}
-	case "ctrl+s":
-		return tea.KeyMsg{Type: tea.KeyCtrlS}
-	case "ctrl+c":
-		return tea.KeyMsg{Type: tea.KeyCtrlC}
-	case "shift+right":
-		return tea.KeyMsg{Type: tea.KeyShiftRight}
-	case "shift+left":
-		return tea.KeyMsg{Type: tea.KeyShiftLeft}
-	case "shift+up":
-		return tea.KeyMsg{Type: tea.KeyShiftUp}
-	case "shift+down":
-		return tea.KeyMsg{Type: tea.KeyShiftDown}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
-	case "down":
-		return tea.KeyMsg{Type: tea.KeyDown}
-	case "left":
-		return tea.KeyMsg{Type: tea.KeyLeft}
-	case "right":
-		return tea.KeyMsg{Type: tea.KeyRight}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) > m.height {
+		t.Errorf("%s: view has %d lines for a %d-row terminal", label, len(lines), m.height)
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
-}
-
-// drain runs cmd and feeds the messages the board cares about back into
-// it. Commands that block (cursor blinks) are abandoned after a short wait
-// and status-clearing ticks are dropped so tests can inspect the message.
-func drain(m Board, cmd tea.Cmd) Board {
-	if cmd == nil {
-		return m
-	}
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	var msg tea.Msg
-	select {
-	case msg = <-done:
-	case <-time.After(50 * time.Millisecond):
-		return m
-	}
-	switch msg := msg.(type) {
-	case tea.BatchMsg:
-		for _, c := range msg {
-			m = drain(m, c)
-		}
-		return m
-	case formSubmitMsg, formCancelMsg, list.FilterMatchesMsg:
-		mm, c := m.Update(msg)
-		return drain(mm.(Board), c)
-	}
-	return m
-}
-
-// press sends one key and processes the resulting commands.
-func press(m Board, k string) Board {
-	mm, cmd := m.Update(keyMsg(k))
-	return drain(mm.(Board), cmd)
-}
-
-// typeText sends each rune of s as a key press.
-func typeText(m Board, s string) Board {
-	for _, r := range s {
-		m = press(m, string(r))
-	}
-	return m
-}
-
-func titles(c column) []string {
-	var out []string
-	for _, t := range c.tasks() {
-		out = append(out, t.title)
-	}
-	return out
-}
-
-func TestViewFitsTerminal(t *testing.T) {
-	m, _ := newTestBoard(t)
-	view := m.View()
-	for _, want := range []string{"To Do", "In Progress", "Done", "buy milk", "write code", "stay cool", "Kancli"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("view is missing %q", want)
-		}
-	}
-	lines := strings.Split(view, "\n")
-	if len(lines) > testHeight {
-		t.Errorf("view has %d lines, terminal has %d", len(lines), testHeight)
-	}
-	for i, line := range lines {
-		if w := lipgloss.Width(line); w > testWidth {
-			t.Errorf("line %d is %d wide, terminal is %d", i, w, testWidth)
+	for i, l := range lines {
+		if w := lipgloss.Width(l); w > m.width {
+			t.Errorf("%s: line %d is %d wide for a %d-column terminal", label, i, w, m.width)
 		}
 	}
 }
 
-func TestFilteredViewFitsTerminal(t *testing.T) {
-	for _, size := range [][2]int{{60, 16}, {80, 24}, {100, 30}} {
-		m := newBoard(store{}, sampleTasks())
+func TestEveryScreenFitsTheTerminal(t *testing.T) {
+	for _, size := range [][2]int{{60, 18}, {80, 24}, {120, 40}} {
+		m, _ := newTestApp(t)
 		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
-		m = press(mm.(Board), "/")
-		m = typeText(m, "su")
+		m = mm.(app)
+		assertFits(t, m, "board")
+		m = press(m, "?")
+		assertFits(t, m, "full help")
+		m = press(m, "?", "n")
+		assertFits(t, m, "form")
+		m = press(m, "esc", "enter")
+		assertFits(t, m, "detail")
+		m = press(m, "esc", "C")
+		assertFits(t, m, "column form")
+		m = press(m, "esc", "b")
+		assertFits(t, m, "boards")
+		m = press(m, "esc", "z")
+		assertFits(t, m, "archive")
+		m = press(m, "esc", "d")
+		assertFits(t, m, "confirm")
+		m = press(m, "esc", "/")
+		m = typeText(m, "p:high")
+		assertFits(t, m, "search")
 		m = press(m, "enter")
-		if !m.cols[todo].list.IsFiltered() {
-			t.Fatalf("%dx%d: filter was not applied", size[0], size[1])
-		}
-		lines := strings.Split(m.View(), "\n")
-		if len(lines) > size[1] {
-			t.Errorf("%dx%d: filtered view has %d lines", size[0], size[1], len(lines))
-		}
-		for i, line := range lines {
-			if w := lipgloss.Width(line); w > size[0] {
-				t.Errorf("%dx%d: line %d is %d wide", size[0], size[1], i, w)
-			}
-		}
+		assertFits(t, m, "search applied")
+		m = press(m, "esc", "space", "space")
+		assertFits(t, m, "marks")
+		m = press(m, "esc", "b", "n")
+		assertFits(t, m, "prompt")
+		m = press(m, "esc", "esc", "enter", "c")
+		assertFits(t, m, "comment prompt")
+	}
+	m := newApp(config{}, styles{}, glyphs{}, newStore(""), sampleFile())
+	if !strings.Contains(m.View(), "Loading") {
+		t.Error("unsized app should show a loading message")
+	}
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 30, Height: 8})
+	if !strings.Contains(mm.(app).View(), "too small") {
+		t.Error("tiny terminal should show the too-small message")
 	}
 }
 
-func TestViewBeforeSizeAndWhenTooSmall(t *testing.T) {
-	m := newBoard(store{}, nil)
-	if got := m.View(); !strings.Contains(got, "Loading") {
-		t.Errorf("unsized view = %q, want loading message", got)
-	}
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 5})
-	if got := mm.(Board).View(); !strings.Contains(got, "too small") {
-		t.Errorf("tiny view = %q, want too-small message", got)
-	}
-}
-
-func TestColumnNavigation(t *testing.T) {
-	m, _ := newTestBoard(t)
-	if m.focused != todo {
-		t.Fatalf("initial focus = %v, want To Do", m.focused)
-	}
+func TestNavigationAndMarks(t *testing.T) {
+	m, _ := newTestApp(t)
 	m = press(m, "l")
-	if m.focused != inProgress {
-		t.Errorf("after l focus = %v, want In Progress", m.focused)
+	if m.focused != 1 {
+		t.Errorf("focus = %d, want 1", m.focused)
 	}
-	m = press(m, "right")
-	m = press(m, "right")
-	if m.focused != todo {
-		t.Errorf("focus should wrap around to To Do, got %v", m.focused)
+	m = press(m, "l", "l")
+	if m.focused != 0 {
+		t.Errorf("focus should wrap, got %d", m.focused)
 	}
-	m = press(m, "h")
-	if m.focused != done {
-		t.Errorf("after h from To Do focus = %v, want Done", m.focused)
+	m = press(m, "3")
+	if m.focused != 2 {
+		t.Errorf("jump focus = %d", m.focused)
 	}
-	m = press(m, "2")
-	if m.focused != inProgress {
-		t.Errorf("after 2 focus = %v, want In Progress", m.focused)
+	m = press(m, "h", "j")
+	if sel, _ := m.col().selected(); sel.ID != 6 {
+		t.Errorf("after j selected = %d, want 6", sel.ID)
 	}
-	if !m.cols[inProgress].focused || m.cols[done].focused {
-		t.Error("column focus flags do not match the board focus")
+	m = press(m, "1", "space", "space")
+	if len(m.marks) != 2 || !m.marks[1] || !m.marks[2] {
+		t.Errorf("marks = %v", m.marks)
 	}
-}
-
-func TestCursorMovement(t *testing.T) {
-	m, _ := newTestBoard(t)
-	m = press(m, "j")
-	if got, _ := m.cols[todo].selected(); got.title != "eat sushi" {
-		t.Errorf("after j selected = %q, want eat sushi", got.title)
+	if !strings.Contains(m.View(), "2 marked") {
+		t.Error("header should count marks")
 	}
-	m = press(m, "k")
-	if got, _ := m.cols[todo].selected(); got.title != "buy milk" {
-		t.Errorf("after k selected = %q, want buy milk", got.title)
+	m = press(m, "esc")
+	if len(m.marks) != 0 {
+		t.Error("esc should clear marks")
 	}
 }
 
-func TestMoveTaskBetweenColumns(t *testing.T) {
-	m, st := newTestBoard(t)
+func TestMoveAndUndo(t *testing.T) {
+	m, st := newTestApp(t)
 	m = press(m, "L")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "fold laundry"}) {
-		t.Errorf("To Do after move = %v", got)
+	if got := idsOf(m.board.TasksIn("in_progress")); !slices.Equal(got, []int{5, 6, 1}) {
+		t.Errorf("In Progress = %v", got)
 	}
-	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk"}) {
-		t.Errorf("In Progress after move = %v", got)
+	if !strings.Contains(m.statusMsg, "WIP limit") {
+		t.Errorf("status = %q, want a WIP warning", m.statusMsg)
 	}
-	moved := m.cols[inProgress].tasks()[1]
-	if moved.status != inProgress {
-		t.Errorf("moved task status = %v, want In Progress", moved.status)
+	f, _ := st.load()
+	if f.Active().Task(1).Column != "in_progress" {
+		t.Error("move not persisted")
 	}
-	if sel, _ := m.cols[inProgress].selected(); sel.id != moved.id {
-		t.Error("moved task should be selected in its new column")
+	m = press(m, "u")
+	if got := idsOf(m.board.TasksIn("todo")); !slices.Equal(got, []int{1, 2, 3, 4}) {
+		t.Errorf("after undo To Do = %v", got)
 	}
-
-	saved, err := st.load()
-	if err != nil {
-		t.Fatal(err)
+	m = press(m, "U")
+	if m.board.Task(1).Column != "in_progress" {
+		t.Error("redo failed")
 	}
-	var found bool
-	for _, task := range saved {
-		if task.title == "buy milk" && task.status == inProgress {
-			found = true
-		}
+	// Bulk move with marks.
+	m = press(m, "1", "space", "space", "L")
+	if got := idsOf(m.board.TasksIn("todo")); !slices.Equal(got, []int{4}) {
+		t.Errorf("after bulk move To Do = %v", got)
 	}
-	if !found {
-		t.Error("move was not persisted")
+	if len(m.marks) != 0 {
+		t.Error("marks should clear after a bulk move")
 	}
-
-	// Moving left from the first column is a no-op with a status message.
+	// Moving left from the first column is refused with a message.
 	m = press(m, "H")
-	if got := titles(m.cols[todo]); len(got) != 2 {
-		t.Errorf("To Do changed on an impossible move: %v", got)
+	if got := m.board.Task(4).Column; got != "todo" {
+		t.Errorf("task 4 moved to %s", got)
 	}
 	if m.statusMsg == "" {
-		t.Error("expected a status message explaining the no-op")
-	}
-
-	// Moving right from Done is a no-op too.
-	m = press(m, "3")
-	m = press(m, "shift+right")
-	if got := titles(m.cols[done]); !slices.Equal(got, []string{"stay cool"}) {
-		t.Errorf("Done changed on an impossible move: %v", got)
-	}
-	// And moving left from Done works.
-	m = press(m, "shift+left")
-	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk", "stay cool"}) {
-		t.Errorf("In Progress after move left = %v", got)
-	}
-	if got := m.cols[done].count(); got != 0 {
-		t.Errorf("Done has %d tasks, want 0", got)
+		t.Error("expected a status message")
 	}
 }
 
-func TestReorderWithinColumn(t *testing.T) {
-	m, st := newTestBoard(t)
-	first := m.cols[todo].tasks()[0]
+func TestReorderRespectsSortAndSearch(t *testing.T) {
+	m, _ := newTestApp(t)
 	m = press(m, "J")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "buy milk", "fold laundry"}) {
-		t.Errorf("after J order = %v", got)
+	if got := idsOf(m.board.TasksIn("todo")); !slices.Equal(got, []int{2, 1, 3, 4}) {
+		t.Errorf("after J = %v", got)
 	}
-	if sel, _ := m.cols[todo].selected(); sel.id != first.id {
-		t.Error("cursor should follow the moved task")
+	if sel, _ := m.col().selected(); sel.ID != 1 {
+		t.Errorf("cursor should follow the task, selected %d", sel.ID)
 	}
-	m = press(m, "K")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
-		t.Errorf("after K order = %v", got)
+	m = press(m, "K", "s")
+	if m.sortMode != sortPriority {
+		t.Errorf("sort = %v", m.sortMode)
 	}
-	// Moving the top task up is a no-op.
-	m = press(m, "K")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "eat sushi", "fold laundry"}) {
-		t.Errorf("after K at top order = %v", got)
+	if got := visibleTitles(m, 0); got[0] != "Write the release notes" {
+		t.Errorf("priority sort order = %v", got)
 	}
-
 	m = press(m, "J")
-	saved, err := st.load()
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(m.statusMsg, "manual") {
+		t.Errorf("reorder while sorted should be refused, status = %q", m.statusMsg)
 	}
-	if saved[0].title != "eat sushi" || saved[1].title != "buy milk" {
-		t.Errorf("order not persisted: %q, %q", saved[0].title, saved[1].title)
+	if got := idsOf(m.board.TasksIn("todo")); !slices.Equal(got, []int{1, 2, 3, 4}) {
+		t.Errorf("board order changed while sorted: %v", got)
 	}
 }
 
-func TestCreateTask(t *testing.T) {
-	m, st := newTestBoard(t)
-	m = press(m, "l")
-	m = press(m, "n")
+func TestSearchFiltersEveryColumn(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = press(m, "/")
+	if !m.searching {
+		t.Fatal("/ should start a search")
+	}
+	m = typeText(m, "@sam")
+	if got := visibleTitles(m, 0); !slices.Equal(got, []string{"Write the release notes"}) {
+		t.Errorf("To Do matches = %v", got)
+	}
+	if got := visibleTitles(m, 1); !slices.Equal(got, []string{"Ship the CLI subcommands"}) {
+		t.Errorf("In Progress matches = %v", got)
+	}
+	if len(visibleTitles(m, 2)) != 0 {
+		t.Error("Done should have no matches")
+	}
+	m = press(m, "enter")
+	if m.searching || m.query != "@sam" {
+		t.Error("enter should keep the query")
+	}
+	// Actions work on the filtered selection.
+	m = press(m, "L")
+	if m.board.Task(1).Column != "in_progress" {
+		t.Error("move on filtered selection failed")
+	}
+	m = press(m, "esc")
+	if m.query != "" || len(visibleTitles(m, 0)) != 3 {
+		t.Error("esc should clear the search")
+	}
+	// Typing board keys while searching is literal.
+	m = press(m, "/")
+	m = typeText(m, "d")
+	if m.state != stateBoard || m.board.Task(2) == nil {
+		t.Error("typing d in the search must not delete")
+	}
+}
+
+func TestCreateEditTask(t *testing.T) {
+	m, st := newTestApp(t)
+	m = press(m, "l", "n")
 	if m.state != stateForm {
 		t.Fatal("n should open the form")
 	}
-	if !strings.Contains(m.View(), "New task") {
-		t.Error("form view should show the New task heading")
-	}
-	m = typeText(m, "ship it")
+	m = typeText(m, "Ship it")
 	m = press(m, "enter")
 	m = typeText(m, "line one")
 	m = press(m, "enter")
 	m = typeText(m, "line two")
+	m = press(m, "tab", "right", "right", "right") // priority: high
+	m = press(m, "tab")
+	m = typeText(m, "+2d")
+	m = press(m, "tab")
+	m = typeText(m, "Ops, Docs")
+	m = press(m, "tab")
+	m = typeText(m, "sam")
 	m = press(m, "ctrl+s")
 	if m.state != stateBoard {
-		t.Fatal("ctrl+s should close the form")
+		t.Fatalf("ctrl+s should close the form, err=%q", m.form.err)
 	}
-	got := m.cols[inProgress].tasks()
-	if len(got) != 2 {
-		t.Fatalf("In Progress has %d tasks, want 2", len(got))
+	got := m.board.TasksIn("in_progress")
+	created := got[len(got)-1]
+	if created.Title != "Ship it" || created.Description != "line one\nline two" || created.Priority != priorityHigh ||
+		created.Due != today().AddDate(0, 0, 2).Format(dateLayout) || !slices.Equal(created.Labels, []string{"docs", "ops"}) || created.Assignee != "sam" {
+		t.Errorf("created = %+v", created)
 	}
-	created := got[1]
-	if created.title != "ship it" || created.description != "line one\nline two" || created.status != inProgress {
-		t.Errorf("created task = %+v", created)
-	}
-	if created.id == "" || created.createdAt.IsZero() {
-		t.Error("created task is missing an id or timestamp")
-	}
-	if sel, _ := m.cols[inProgress].selected(); sel.id != created.id {
+	if sel, _ := m.col().selected(); sel.ID != created.ID {
 		t.Error("new task should be selected")
 	}
-	if !strings.Contains(m.cols[inProgress].view(), "line one …") {
-		t.Error("card should show the first description line with an ellipsis")
+	f, _ := st.load()
+	if f.Active().Task(created.ID) == nil {
+		t.Error("new task not persisted")
 	}
 
-	saved, err := st.load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(saved) != 6 {
-		t.Errorf("saved %d tasks, want 6", len(saved))
-	}
-}
-
-func TestCreateTaskRequiresTitle(t *testing.T) {
-	m, _ := newTestBoard(t)
-	m = press(m, "n")
-	m = press(m, "ctrl+s")
-	if m.state != stateForm {
-		t.Fatal("form should stay open without a title")
-	}
-	if m.form.err == "" || !strings.Contains(m.View(), "title is required") {
-		t.Error("expected a validation error")
+	// Validation.
+	m = press(m, "n", "ctrl+s")
+	if m.state != stateForm || !strings.Contains(m.form.err, "title") {
+		t.Errorf("empty title should be rejected: %q", m.form.err)
 	}
 	m = typeText(m, "x")
-	if m.form.err != "" {
-		t.Error("error should clear once a title is typed")
+	m = press(m, "tab", "tab", "tab")
+	m = typeText(m, "someday")
+	m = press(m, "ctrl+s")
+	if m.state != stateForm || !strings.Contains(m.form.err, "date") {
+		t.Errorf("bad date should be rejected: %q", m.form.err)
 	}
 	m = press(m, "esc")
 	if m.state != stateBoard {
-		t.Error("esc should close the form")
+		t.Error("esc should cancel")
 	}
-	if got := m.cols[todo].count(); got != 3 {
-		t.Errorf("cancelled form added a task: %d tasks", got)
-	}
-}
 
-func TestEditTask(t *testing.T) {
-	m, st := newTestBoard(t)
-	original := m.cols[todo].tasks()[0]
-	m = press(m, "e")
-	if m.state != stateForm || m.form.mode != formEdit {
-		t.Fatal("e should open the edit form")
+	// Edit keeps the id and records history.
+	m = press(m, "1", "e")
+	if m.form.title.Value() != "Write the release notes" {
+		t.Errorf("edit form not prefilled: %q", m.form.title.Value())
 	}
-	if m.form.title.Value() != "buy milk" || m.form.desc.Value() != "strawberry milk" {
-		t.Errorf("form not prefilled: %q / %q", m.form.title.Value(), m.form.desc.Value())
-	}
-	m = typeText(m, " today")
-	m = press(m, "tab")
-	m = typeText(m, "!")
+	m = typeText(m, " now")
 	m = press(m, "ctrl+s")
-	if m.state != stateBoard {
-		t.Fatal("ctrl+s should close the form")
-	}
-	edited := m.cols[todo].tasks()[0]
-	if edited.id != original.id {
-		t.Error("editing changed the task id")
-	}
-	if edited.title != "buy milk today" || edited.description != "strawberry milk!" {
-		t.Errorf("edited task = %q / %q", edited.title, edited.description)
-	}
-	if got := m.cols[todo].count(); got != 3 {
-		t.Errorf("edit changed the task count to %d", got)
-	}
-	saved, err := st.load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved[0].title != "buy milk today" {
-		t.Errorf("edit not persisted: %q", saved[0].title)
-	}
-
-	// Enter also opens the editor.
-	m = press(m, "enter")
-	if m.state != stateForm {
-		t.Error("enter should open the edit form")
+	if got := m.board.Task(1); got.Title != "Write the release notes now" || !strings.Contains(got.History[len(got.History)-1].Text, "renamed") {
+		t.Errorf("edit = %+v", got)
 	}
 }
 
-func TestDeleteTask(t *testing.T) {
-	m, st := newTestBoard(t)
+func TestDeleteArchiveAndArchiveView(t *testing.T) {
+	m, _ := newTestApp(t)
 	m = press(m, "d")
-	if m.state != stateConfirmDelete {
-		t.Fatal("d should ask for confirmation")
-	}
-	if !strings.Contains(m.View(), "Delete task?") || !strings.Contains(m.View(), "buy milk") {
-		t.Error("confirmation should name the task")
+	if m.state != stateConfirm || !strings.Contains(m.View(), "Write the release notes") {
+		t.Fatal("d should confirm with the task title")
 	}
 	m = press(m, "n")
-	if m.state != stateBoard || m.cols[todo].count() != 3 {
-		t.Fatal("n should cancel the delete")
+	if m.state != stateBoard || m.board.Task(1) == nil {
+		t.Fatal("n should cancel")
 	}
-	m = press(m, "d")
+	m = press(m, "d", "y")
+	if m.board.Task(1) != nil {
+		t.Error("task not deleted")
+	}
+	m = press(m, "u")
+	if m.board.Task(1) == nil {
+		t.Error("undo should bring the task back")
+	}
+	m = press(m, "a")
+	if !m.board.Task(1).Archived() {
+		t.Error("a should archive")
+	}
+	m = press(m, "z")
+	if m.state != statePicker || !strings.Contains(m.View(), "#1 Write the release notes") {
+		t.Fatal("z should list archived tasks")
+	}
+	m = press(m, "enter")
+	if m.board.Task(1).Archived() {
+		t.Error("enter should restore")
+	}
+	m = press(m, "esc", "3", "Z", "y")
+	if m.board.CountIn("done") != 0 || len(m.board.ArchivedTasks()) != 2 {
+		t.Error("Z should archive every done task")
+	}
+	m = press(m, "z", "d", "y")
+	if len(m.board.ArchivedTasks()) != 1 {
+		t.Error("d in the archive should delete permanently")
+	}
+}
+
+func TestDetailView(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = press(m, "enter")
+	if m.state != stateDetail {
+		t.Fatal("enter should open the detail view")
+	}
+	v := m.View()
+	for _, want := range []string{"#1 Write the release notes", "Checklist 1/3", "Draft", "github.com", "Activity"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("detail view missing %q", want)
+		}
+	}
+	m = press(m, "tab", "tab", "space") // second checklist item
+	if !m.board.Task(1).Checklist[1].Done {
+		t.Error("space should toggle the item under the cursor")
+	}
+	m = press(m, "t")
+	m = typeText(m, "Ship")
+	m = press(m, "enter")
+	if len(m.board.Task(1).Checklist) != 4 || m.state != stateDetail {
+		t.Error("t should add a checklist item and return to the detail view")
+	}
+	m = press(m, "X")
+	if len(m.board.Task(1).Checklist) != 3 {
+		t.Error("X should remove the new item")
+	}
+	m = press(m, "c")
+	m = typeText(m, "looks good")
+	m = press(m, "enter")
+	if got := m.board.Task(1).Comments; len(got) != 1 || got[0].Text != "looks good" {
+		t.Errorf("comments = %v", got)
+	}
+	m = press(m, "A")
+	m = typeText(m, "notes.txt")
+	m = press(m, "enter")
+	if got := m.board.Task(1).Attachments; len(got) != 2 {
+		t.Errorf("attachments = %v", got)
+	}
+	m = press(m, "L")
+	if m.board.Task(1).Column != "in_progress" || m.focused != 1 {
+		t.Error("L in the detail view should move the task and follow it")
+	}
+	if !strings.Contains(m.statusMsg, "Moved #1 to In Progress") {
+		t.Errorf("status = %q", m.statusMsg)
+	}
+	m = press(m, "e")
+	if m.state != stateForm || m.form.mode != formEdit {
+		t.Fatal("e should open the editor")
+	}
+	m = press(m, "esc")
+	if m.state != stateDetail {
+		t.Error("cancelling the editor should return to the detail view")
+	}
+	m = press(m, "d", "y")
+	if m.state != stateBoard || m.board.Task(1) != nil {
+		t.Error("delete from the detail view should return to the board")
+	}
+}
+
+func TestColumnsAndBoards(t *testing.T) {
+	m, _ := newTestApp(t)
+	m = press(m, "C")
+	m = typeText(m, "Review")
+	m = press(m, "tab", "right", "tab")
+	m = typeText(m, "2")
+	m = press(m, "ctrl+s")
+	if len(m.board.Columns) != 4 || m.board.Columns[3].Name != "Review" || m.board.Columns[3].WIPLimit != 2 {
+		t.Fatalf("columns = %+v", m.board.Columns)
+	}
+	if m.focused != 3 || len(m.cols) != 4 {
+		t.Errorf("new column should be focused: focused=%d cols=%d", m.focused, len(m.cols))
+	}
+	m = press(m, "<")
+	if m.board.Columns[2].Name != "Review" || m.focused != 2 {
+		t.Error("< should move the column left")
+	}
+	m = press(m, "E")
+	m = press(m, "backspace", "backspace", "backspace", "backspace", "backspace", "backspace")
+	m = typeText(m, "QA")
+	m = press(m, "ctrl+s")
+	if m.board.Columns[2].Name != "QA" {
+		t.Errorf("rename failed: %+v", m.board.Columns[2])
+	}
+	// Deleting a column keeps its archived tasks.
+	m = press(m, "2", "j", "a", "1")
+	m = press(m, "2", "D")
+	if !strings.Contains(m.View(), "(1 archived)") {
+		t.Error("confirm dialog should mention archived tasks")
+	}
 	m = press(m, "y")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"eat sushi", "fold laundry"}) {
-		t.Errorf("after delete = %v", got)
+	if len(m.board.ArchivedTasks()) != 1 || m.board.ArchivedTasks()[0].Column != "todo" {
+		t.Errorf("archived task lost on column delete: %+v", m.board.ArchivedTasks())
 	}
-	if sel, ok := m.cols[todo].selected(); !ok || sel.title != "eat sushi" {
-		t.Errorf("cursor should land on the next task, got %v", sel.title)
+	m = press(m, "u", "u")
+	m = press(m, "2", "D", "y")
+	if len(m.board.Columns) != 3 || m.board.CountIn("todo") != 6 {
+		t.Errorf("deleting In Progress should move its tasks to To Do: %v", idsOf(m.board.TasksIn("todo")))
 	}
-	saved, err := st.load()
+	m = press(m, "u")
+	if len(m.board.Columns) != 4 || len(m.cols) != 4 {
+		t.Error("undo should restore the column")
+	}
+
+	m = press(m, "b")
+	if m.state != statePicker {
+		t.Fatal("b should open the board picker")
+	}
+	m = press(m, "n")
+	m = typeText(m, "Work")
+	m = press(m, "enter")
+	if m.board.Name != "Work" || m.state != stateBoard || len(m.board.Tasks) != 0 {
+		t.Errorf("new board not opened: %s", m.board.Name)
+	}
+	m = press(m, "b", "j", "enter")
+	if m.board.Name != "Work" {
+		m = press(m, "b", "k", "enter")
+	}
+	m = press(m, "b")
+	m = press(m, "r")
+	m = press(m, "backspace", "backspace", "backspace", "backspace")
+	m = typeText(m, "Office")
+	m = press(m, "enter")
+	if m.file.Board("Office") == nil {
+		t.Error("rename failed")
+	}
+	m = press(m, "d", "y")
+	if len(m.file.Boards) != 1 || m.board.Name != "Demo" {
+		t.Errorf("delete board failed: %d boards, on %s", len(m.file.Boards), m.board.Name)
+	}
+}
+
+func TestExternalChangesAreMerged(t *testing.T) {
+	m, st := newTestApp(t)
+	// Another process appends an event.
+	other := newStore(st.path)
+	other.actor = "cli"
+	f, err := other.load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(saved) != 4 {
-		t.Errorf("saved %d tasks, want 4", len(saved))
+	if _, err := f.Active().AddTask(Task{Title: "From elsewhere"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.save(f); err != nil {
+		t.Fatal(err)
 	}
 
-	// Deleting the last task in a column leaves an empty column that still
-	// renders and ignores further deletes.
-	m = press(m, "3")
-	m = press(m, "d")
-	m = press(m, "y")
-	if m.cols[done].count() != 0 {
-		t.Error("Done should be empty")
+	// A poll picks it up.
+	if !st.changedOnDisk() {
+		t.Fatal("appended events should be detected")
 	}
-	m = press(m, "d")
-	if m.state != stateBoard {
-		t.Error("delete on an empty column should do nothing")
+	mm, _ := m.Update(pollMsg{})
+	m = mm.(app)
+	if m.board.Task(9) == nil || m.board.Task(9).Title != "From elsewhere" {
+		t.Fatal("poll should have replayed the external event")
 	}
-	if !strings.Contains(m.View(), "No tasks") {
-		t.Error("empty column should say so")
-	}
-}
 
-func TestFilterCapturesKeysAndMoves(t *testing.T) {
-	m, _ := newTestBoard(t)
-	m = press(m, "/")
-	if !m.cols[todo].filtering() {
-		t.Fatal("/ should start filtering")
+	// Another external event followed by a local change: both survive.
+	f.Active().AddTask(Task{Title: "Another"}) //nolint:errcheck // test data
+	if err := other.save(f); err != nil {
+		t.Fatal(err)
 	}
-	// While typing a filter, board keys are literal input.
-	m = typeText(m, "sushi")
-	if m.state != stateBoard || m.cols[todo].count() != 3 {
-		t.Fatal("filter text should not trigger board actions")
-	}
-	m = press(m, "enter")
-	if !m.cols[todo].list.IsFiltered() {
-		t.Fatal("enter should apply the filter")
-	}
-	if got := len(m.cols[todo].list.VisibleItems()); got != 1 {
-		t.Fatalf("filter shows %d tasks, want 1", got)
-	}
-	// Board actions use the visible selection, not the raw index.
 	m = press(m, "L")
-	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "eat sushi"}) {
-		t.Errorf("In Progress after filtered move = %v", got)
+	if m.err != nil {
+		t.Fatalf("local change failed: %v", m.err)
 	}
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "fold laundry"}) {
-		t.Errorf("To Do after filtered move = %v", got)
+	if m.board.Task(10) == nil || m.board.Task(1).Column != "in_progress" {
+		t.Errorf("merge lost a change: external=%v local=%v", m.board.Task(10) != nil, m.board.Task(1).Column)
 	}
-	// Reordering is refused while filtered.
-	m = press(m, "J")
-	if got := titles(m.cols[todo]); !slices.Equal(got, []string{"buy milk", "fold laundry"}) {
-		t.Errorf("reorder changed order while filtered: %v", got)
+	// The other process sees the local move after reloading.
+	f, err = other.load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Leaving the column clears its filter.
-	m = press(m, "l")
-	if m.cols[todo].hasFilter() {
-		t.Error("blurring a column should clear its filter")
+	if f.Active().Task(1).Column != "in_progress" {
+		t.Error("the other process should replay the local move")
+	}
+
+	// ctrl+s writes a snapshot and archives the tail.
+	m = press(m, "ctrl+s")
+	if m.err != nil || st.tailEvents() != 0 {
+		t.Errorf("compact: err=%v tail=%d", m.err, st.tailEvents())
+	}
+	if segs, _ := filepath.Glob(filepath.Join(st.archiveDir, "*.jsonl")); len(segs) == 0 {
+		t.Error("compaction should archive the tail log")
+	}
+	f, _ = newStore(st.path).load()
+	if f.Active().Task(1).Column != "in_progress" || f.Active().Task(10) == nil {
+		t.Error("snapshot should carry the merged state")
 	}
 }
 
-func TestHelpToggleAndQuit(t *testing.T) {
-	m, _ := newTestBoard(t)
-	short := lipgloss.Height(m.footerView())
+func TestMouse(t *testing.T) {
+	m, _ := newTestApp(t)
+	colW := m.cols[0].width
+	// Click the second card in the second column.
+	headerH := lipgloss.Height(m.headerView())
+	y := headerH + 3 + m.cols[1].rows // top border + title + padding, then one card down
+	mm, _ := m.Update(tea.MouseMsg{X: colW + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = mm.(app)
+	if m.focused != 1 {
+		t.Fatalf("click should focus column 1, got %d", m.focused)
+	}
+	if sel, _ := m.col().selected(); sel.ID != 6 {
+		t.Errorf("click should select task 6, got %d", sel.ID)
+	}
+	mm, _ = m.Update(tea.MouseMsg{X: colW + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = mm.(app)
+	if m.state != stateDetail {
+		t.Error("clicking the selected card should open it")
+	}
+	m = press(m, "esc")
+	mm, _ = m.Update(tea.MouseMsg{X: 2, Y: y, Button: tea.MouseButtonWheelDown})
+	m = mm.(app)
+	if sel, _ := m.cols[0].selected(); sel.ID != 2 {
+		t.Errorf("wheel should scroll the column under the pointer, selected %d", sel.ID)
+	}
+}
+
+func TestQuitAndHelp(t *testing.T) {
+	m, _ := newTestApp(t)
 	m = press(m, "?")
 	if !m.help.ShowAll {
 		t.Error("? should expand help")
 	}
-	if full := lipgloss.Height(m.footerView()); full <= short {
-		t.Errorf("full help height %d should exceed short help height %d", full, short)
-	}
-	if lines := strings.Split(m.View(), "\n"); len(lines) > testHeight {
-		t.Errorf("view with full help has %d lines, terminal has %d", len(lines), testHeight)
-	}
-
 	mm, cmd := m.Update(keyMsg("q"))
 	if cmd == nil {
-		t.Fatal("q should return a quit command")
+		t.Fatal("q should quit")
 	}
+	if _, ok := cmd().(tea.QuitMsg); !ok || mm.(app).View() != "" {
+		t.Error("q should return QuitMsg and blank the view")
+	}
+	m = press(m, "n")
+	_, cmd = m.Update(keyMsg("ctrl+c"))
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Error("q should quit")
-	}
-	if mm.(Board).View() != "" {
-		t.Error("view should be blank while quitting")
+		t.Error("ctrl+c should quit from inside the form")
 	}
 }
 
-func TestSaveErrorIsShown(t *testing.T) {
-	dir := t.TempDir()
-	blocked := filepath.Join(dir, "board.json")
-	if err := os.MkdirAll(blocked, 0o755); err != nil {
+func TestDemoModeAndThemes(t *testing.T) {
+	for _, name := range themeNames {
+		th, _ := themeByName(name, name == "mono")
+		m := newApp(config{Compact: true}, newStyles(th, name == "mono"), newGlyphs(name == "mono"), newStore(""), sampleFile())
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		m = mm.(app)
+		assertFits(t, m, name)
+		if !strings.Contains(m.View(), "demo mode") {
+			t.Errorf("%s: header should mention demo mode", name)
+		}
+		m = press(m, "L")
+		if m.err != nil {
+			t.Errorf("%s: demo mode returned an error: %v", name, m.err)
+		}
+	}
+}
+
+func TestConfiguredCursorKeys(t *testing.T) {
+	st := newStore("")
+	s, g := testStyles()
+	m := newApp(config{Keys: map[string][]string{"down": {"w"}, "up": {"e"}, "edit": {"E"}}}, s, g, st, sampleFile())
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
+	m = mm.(app)
+	m = press(m, "w")
+	if sel, _ := m.col().selected(); sel.ID != 2 {
+		t.Errorf("configured down key did not move the cursor, selected %d", sel.ID)
+	}
+	m = press(m, "j")
+	if sel, _ := m.col().selected(); sel.ID != 2 {
+		t.Errorf("default down key should be replaced, selected %d", sel.ID)
+	}
+	m = press(m, "e")
+	if sel, _ := m.col().selected(); sel.ID != 1 || m.state != stateBoard {
+		t.Errorf("configured up key failed: selected %d state %v", sel.ID, m.state)
+	}
+}
+
+func TestStatsScreenAndRelevance(t *testing.T) {
+	s, g := testStyles()
+	st := newStore("")
+	f := demoFile()
+	if err := st.save(f); err != nil {
 		t.Fatal(err)
 	}
-	m := newBoard(newStore(blocked), sampleTasks())
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
-	m = press(mm.(Board), "L")
-	if m.err == nil {
-		t.Fatal("expected a save error")
+	m := newApp(config{}, s, g, st, f)
+	for _, size := range [][2]int{{60, 18}, {110, 40}} {
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		a := press(mm.(app), "S")
+		if a.state != stateStats {
+			t.Fatal("S should open the stats screen")
+		}
+		assertFits(t, a, "stats")
+		if size[1] >= 40 {
+			v := a.View()
+			for _, want := range []string{"Stats", "finished", "Finished per week", "Work in progress", "Mean time in column"} {
+				if !strings.Contains(v, want) {
+					t.Errorf("stats view missing %q", want)
+				}
+			}
+		}
+		a = press(a, "w")
+		if a.stats.days != 365 {
+			t.Errorf("w should cycle the window, got %d", a.stats.days)
+		}
+		a = press(a, "j", "esc")
+		if a.state != stateBoard {
+			t.Error("esc should return to the board")
+		}
 	}
-	if !strings.Contains(m.View(), "save failed") {
-		t.Error("header should show the save error")
+
+	// Free-text search ranks by relevance: the title hit comes first.
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 40})
+	a := press(mm.(app), "/")
+	a = typeText(a, "release")
+	if got := visibleTitles(a, 0); len(got) == 0 || got[0] != "Write the release notes" {
+		t.Errorf("relevance order = %v", got)
+	}
+	if !strings.Contains(a.View(), "match") {
+		t.Error("search bar should show the match count")
+	}
+	a = press(a, "esc")
+
+	// Creating a near-duplicate warns.
+	a = press(a, "n")
+	a = typeText(a, "Write release notes")
+	a = press(a, "ctrl+s")
+	if !strings.Contains(a.statusMsg, "Similar to #1") {
+		t.Errorf("status = %q", a.statusMsg)
+	}
+	a = press(a, "enter")
+	if !strings.Contains(a.View(), "Similar tasks") {
+		t.Error("detail view should list similar tasks")
 	}
 }
 
-func TestDemoModeDoesNotPersist(t *testing.T) {
-	m := newBoard(store{}, sampleTasks())
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
-	m = mm.(Board)
-	if !strings.Contains(m.View(), "demo mode") {
-		t.Error("header should mention demo mode")
-	}
-	m = press(m, "L")
+func TestReadOnlyAsOfView(t *testing.T) {
+	m, st := newTestApp(t)
+	m = press(m, "L", "ctrl+s")
 	if m.err != nil {
-		t.Errorf("demo mode returned an error: %v", m.err)
+		t.Fatal(m.err)
 	}
-	if got := titles(m.cols[inProgress]); !slices.Equal(got, []string{"write code", "buy milk"}) {
-		t.Errorf("In Progress after move = %v", got)
+	past, err := st.loadAsOf(timeNow().Add(-10 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, g := testStyles()
+	ro := newApp(config{}, s, g, newStore(st.path), past)
+	ro.readOnly, ro.asOf = true, timeNow().Add(-10*24*time.Hour)
+	mm, _ := ro.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
+	ro = mm.(app)
+	if !strings.Contains(ro.View(), "read-only") {
+		t.Error("header should show the read-only banner")
+	}
+	before := stateOf(ro.file)
+	for _, k := range []string{"L", "d", "n", "a", "u", "C", "D", "Z", "ctrl+s"} {
+		ro = press(ro, k)
+		if ro.state != stateBoard {
+			ro = press(ro, "esc")
+		}
+	}
+	if stateOf(ro.file) != before {
+		t.Error("read-only view was mutated")
+	}
+	if !strings.Contains(ro.statusMsg, "Read-only") {
+		t.Errorf("status = %q", ro.statusMsg)
+	}
+	ro = press(ro, "enter", "c")
+	if ro.state != stateDetail || !strings.Contains(ro.statusMsg, "Read-only") {
+		t.Error("detail view mutations should be blocked")
+	}
+	if tail := newStore(st.path); tail.enabled() {
+		f2, _ := tail.load()
+		if f2.Active().Task(1).Column != "in_progress" {
+			t.Error("the live board should be untouched by the read-only session")
+		}
 	}
 }
