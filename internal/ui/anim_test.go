@@ -23,7 +23,7 @@ func TestMoveAnimatesCard(t *testing.T) {
 		if !strings.Contains(view, first.Title) {
 			t.Fatal("the ghost card must show the moved task")
 		}
-		mm, _ = m.Update(animMsg{})
+		mm, _ = m.Update(animMsg{gen: m.anim.gen})
 		m = mm.(App)
 		if frames++; frames > 3*animFPS {
 			t.Fatal("animation never settled")
@@ -37,6 +37,17 @@ func TestMoveAnimatesCard(t *testing.T) {
 	}
 	if strings.Count(m.View(), first.Title) != 1 {
 		t.Error("the card must be drawn exactly once after the animation")
+	}
+}
+
+func TestStaleAnimationTickIsIgnored(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.Update(keyMsg("L"))
+	m = mm.(App)
+	before := m.anim.frames
+	mm, cmd := m.Update(animMsg{gen: m.anim.gen - 1})
+	if m = mm.(App); m.anim.frames != before || cmd != nil {
+		t.Error("a tick from an earlier animation must not advance the current one")
 	}
 }
 

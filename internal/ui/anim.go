@@ -18,17 +18,20 @@ import (
 // animFPS is the frame rate of card animations.
 const animFPS = 60
 
-// animMsg advances the running card animation by one frame.
-type animMsg struct{}
+// animMsg advances the running card animation by one frame. gen names
+// the animation the tick belongs to, so a ticker left over from an
+// animation that was replaced mid-flight does not double the frame rate.
+type animMsg struct{ gen int }
 
-func animTick() tea.Cmd {
-	return tea.Tick(time.Second/animFPS, func(time.Time) tea.Msg { return animMsg{} })
+func animTick(gen int) tea.Cmd {
+	return tea.Tick(time.Second/animFPS, func(time.Time) tea.Msg { return animMsg{gen: gen} })
 }
 
 // cardAnim slides a "lifted" copy of a card from where it was to where it
 // landed, driven by a damped spring so the motion eases out and settles.
 // While it runs the real card is hidden in its column.
 type cardAnim struct {
+	gen    int
 	taskID int
 	ghost  []string
 	x, y   float64
@@ -97,9 +100,11 @@ func (m *App) startAnim(id int, col int, fx, fy int) tea.Cmd {
 	if !ok || t == nil || m.cfg.NoAnimations {
 		return nil
 	}
+	m.animGen++
 	m.anim = newCardAnim(id, m.ghostCard(*t, col), fx, fy, tx, ty)
+	m.anim.gen = m.animGen
 	m.refresh() // hide the real card
-	return animTick()
+	return animTick(m.animGen)
 }
 
 // ghostCard renders a framed copy of t at the width of column col.

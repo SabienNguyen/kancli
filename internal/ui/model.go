@@ -100,7 +100,8 @@ type App struct {
 	readOnly bool
 	asOf     time.Time
 
-	anim   *cardAnim // card in flight, if any
+	anim    *cardAnim // card in flight, if any
+	animGen int       // counts animations so stale frame ticks are ignored
 	images bool      // the terminal can show image attachments inline
 }
 
@@ -476,7 +477,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case animMsg:
-		if m.anim == nil {
+		if m.anim == nil || msg.gen != m.anim.gen {
 			return m, nil
 		}
 		if m.anim.step() {
@@ -484,7 +485,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 			return m, nil
 		}
-		return m, animTick()
+		return m, animTick(msg.gen)
 
 	case pollMsg:
 		if m.store.ChangedOnDisk() && !m.readOnly && m.state == stateBoard {
