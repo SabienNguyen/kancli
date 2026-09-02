@@ -1,6 +1,9 @@
 package main
 
 import (
+	"strings"
+	"time"
+
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -9,74 +12,190 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type Form struct {
-	help        help.Model
-	title       textinput.Model
-	description textarea.Model
-	col         column
-	index       int
+type formMode int
+
+const (
+	formCreate formMode = iota
+	formEdit
+)
+
+// formSubmitMsg is sent when the user saves the form.
+type formSubmitMsg struct {
+	task Task
+	mode formMode
 }
 
-func newDefaultForm() *Form {
-	return NewForm("task name", "")
+// formCancelMsg is sent when the user dismisses the form.
+type formCancelMsg struct{}
+
+const (
+	fieldTitle = iota
+	fieldDescription
+	numFields
+)
+
+const (
+	titleCharLimit       = 120
+	descriptionCharLimit = 4000
+	formMaxWidth         = 72
+	formMinWidth         = 24
+	formMaxDescHeight    = 10
+	formMinDescHeight    = 2
+)
+
+// taskForm creates or edits a single task.
+type taskForm struct {
+	mode  formMode
+	task  Task
+	title textinput.Model
+	desc  textarea.Model
+	field int
+	err   string
+	keys  formKeyMap
+	help  help.Model
 }
 
-func NewForm(title, description string) *Form {
-	form := Form{
-		help:        help.New(),
-		title:       textinput.New(),
-		description: textarea.New(),
+func newTaskForm(mode formMode, t Task) taskForm {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = "What needs to be done?"
+	ti.CharLimit = titleCharLimit
+	ti.SetValue(t.title)
+	ti.CursorEnd()
+
+	ta := textarea.New()
+	ta.Prompt = ""
+	ta.Placeholder = "Add some details (optional)"
+	ta.ShowLineNumbers = false
+	ta.CharLimit = descriptionCharLimit
+	ta.SetValue(t.description)
+
+	f := taskForm{
+		mode:  mode,
+		task:  t,
+		title: ti,
+		desc:  ta,
+		keys:  formKeys,
+		help:  help.New(),
 	}
-	form.title.Placeholder = title
-	form.description.Placeholder = description
-	form.title.Focus()
-	return &form
+	f.title.Focus()
+	f.setSize(formMaxWidth, formMaxDescHeight)
+	return f
 }
 
-func (f Form) CreateTask() Task {
-	return Task{f.col.status, f.title.Value(), f.description.Value()}
+// Init starts the cursor blinking in the focused field.
+func (f taskForm) Init() tea.Cmd {
+	return textinput.Blink
 }
 
-func (f Form) Init() tea.Cmd {
-	return nil
+// setSize sizes the inputs so the dialog fits in a width x height area.
+func (f *taskForm) setSize(width, height int) {
+	inner := width - dialogStyle.GetHorizontalFrameSize()
+	inner = min(max(inner, formMinWidth), formMaxWidth)
+	f.title.Width = inner - 1
+	f.desc.SetWidth(inner)
+
+	// Everything except the description is a fixed number of rows: the
+	// heading, two labels, the title input, the footer and three spacers.
+	const fixedRows = 8
+	descHeight := height - dialogStyle.GetVerticalFrameSize() - fixedRows
+	f.desc.SetHeight(min(max(descHeight, formMinDescHeight), formMaxDescHeight))
 }
 
-func (f Form) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
+func (f taskForm) focusField(i int) (taskForm, tea.Cmd) {
+	f.field = i
+	f.title.Blur()
+	f.desc.Blur()
+	switch i {
+	case fieldTitle:
+		return f, f.title.Focus()
+	default:
+		return f, f.desc.Focus()
+	}
+}
+
+func (f taskForm) Update(msg tea.Msg) (taskForm, tea.Cmd) {
 	switch msg := msg.(type) {
-	case column:
-		f.col = msg
-		f.col.list.Index()
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, keys.Quit):
-			return f, tea.Quit
-
-		case key.Matches(msg, keys.Back):
-			return board.Update(nil)
-		case key.Matches(msg, keys.Enter):
-			if f.title.Focused() {
-				f.title.Blur()
-				f.description.Focus()
-				return f, textarea.Blink
-			}
-			// Return the completed form as a message.
-			return board.Update(f)
+		case key.Matches(msg, f.keys.Cancel):
+			return f, func() tea.Msg { return formCancelMsg{} }
+		case key.Matches(msg, f.keys.Submit):
+			return f.submit()
+		case key.Matches(msg, f.keys.Next):
+			return f.focusField((f.field + 1) % numFields)
+		case key.Matches(msg, f.keys.Prev):
+			return f.focusField((f.field + numFields - 1) % numFields)
+		case msg.Type == tea.KeyEnter && f.field == fieldTitle:
+			return f.focusField(fieldDescription)
 		}
-	}
-	if f.title.Focused() {
-		f.title, cmd = f.title.Update(msg)
+		var cmd tea.Cmd
+		if f.field == fieldTitle {
+			f.title, cmd = f.title.Update(msg)
+		} else {
+			f.desc, cmd = f.desc.Update(msg)
+		}
+		if f.err != "" && strings.TrimSpace(f.title.Value()) != "" {
+			f.err = ""
+		}
 		return f, cmd
 	}
-	f.description, cmd = f.description.Update(msg)
-	return f, cmd
+
+	// Non-key messages (cursor blinks and the like) are addressed to a
+	// specific component, so let both see them.
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+	f.title, cmd = f.title.Update(msg)
+	cmds = append(cmds, cmd)
+	f.desc, cmd = f.desc.Update(msg)
+	cmds = append(cmds, cmd)
+	return f, tea.Batch(cmds...)
 }
 
-func (f Form) View() string {
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		"Create a new task",
+func (f taskForm) submit() (taskForm, tea.Cmd) {
+	title := strings.TrimSpace(f.title.Value())
+	if title == "" {
+		f.err = "A title is required."
+		return f.focusField(fieldTitle)
+	}
+	t := f.task
+	t.title = title
+	t.description = strings.TrimSpace(f.desc.Value())
+	t.updatedAt = time.Now()
+	mode := f.mode
+	return f, func() tea.Msg { return formSubmitMsg{task: t, mode: mode} }
+}
+
+func (f taskForm) heading() string {
+	if f.mode == formEdit {
+		return "Edit task"
+	}
+	return "New task"
+}
+
+func (f taskForm) View() string {
+	titleLabel, descLabel := labelStyle, labelStyle
+	if f.field == fieldTitle {
+		titleLabel = focusedLabelStyle
+	} else {
+		descLabel = focusedLabelStyle
+	}
+
+	footer := f.help.View(f.keys)
+	if f.err != "" {
+		footer = errorStyle.Render(f.err)
+	}
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		dialogTitleStyle.Render(f.heading())+mutedStyle.Render(" · "+f.task.status.String()),
+		"",
+		titleLabel.Render("Title"),
 		f.title.View(),
-		f.description.View(),
-		f.help.View(keys))
+		"",
+		descLabel.Render("Description"),
+		f.desc.View(),
+		"",
+		footer,
+	)
+	return dialogStyle.Render(body)
 }
