@@ -4,6 +4,11 @@
 
 ### Added
 
+- Safer upgrades: the first run on data from an older kancli copies the old
+  files to `board.backups/vN/` and says so; events carry a format version
+  and an older kancli refuses to open a newer log with advice to upgrade;
+  renamed config keys keep working with a warning. Frozen fixtures of every
+  released data format are loaded by the test suite.
 - The command line is built on Cobra: grouped `kancli --help`, per-command
   help and examples, `kancli completion bash|zsh|fish|powershell` with
   completion of task ids, column and board names, and `--long` flags. The

@@ -26,6 +26,7 @@ files on your machine; there is no server or account.
 
 - [Features](#features)
 - [Install](#install)
+- [Upgrading](#upgrading)
 - [The board](#the-board)
 - [Stats and history](#stats-and-history)
 - [The CLI](#the-cli)
@@ -99,6 +100,16 @@ Other ways in, if you prefer them:
 
 The `duckdb` command-line tool is optional; it enables `kancli stats -q`
 and Parquet export. Everything else is pure Go.
+
+## Upgrading
+
+Rebuild or reinstall the binary the same way you installed it (`./install.sh`
+from an updated checkout, or the release archive). Your data is picked up as
+is. If the data format changed, the first run copies the old files to
+`board.backups/vN/` next to `board.json` and prints where they are; a
+renamed config setting keeps working and prints its new name. An older
+kancli refuses to open data from a newer one rather than touching it. See
+`docs/compatibility.md` for the details.
 
 ## The board
 
