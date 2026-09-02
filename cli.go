@@ -140,11 +140,10 @@ func (c *cli) stats(args []string) error {
 		fmt.Fprint(c.stdout, out)
 		return err
 	}
-	events, err := c.env.store.events()
+	st, err := c.env.store.boardStats(b, timeNow(), days)
 	if err != nil {
 		return err
 	}
-	st := computeStats(b, events, timeNow(), days)
 	if asJSON {
 		enc := json.NewEncoder(c.stdout)
 		enc.SetIndent("", "  ")

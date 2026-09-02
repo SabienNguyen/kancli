@@ -47,6 +47,16 @@ type store struct {
 	needReload bool      // another process appended events since our load
 
 	mem []Event // event log for in-memory stores
+
+	segments map[string]cachedSegment // archived segments already parsed
+	walkers  map[string]*statsWalker  // incremental stats per board
+}
+
+// cachedSegment is a parsed archive file; archived segments never change,
+// so the size check only guards against a file being replaced.
+type cachedSegment struct {
+	size   int64
+	events []Event
 }
 
 func newStore(path string) *store {
@@ -349,13 +359,25 @@ func (s *store) events() ([]Event, error) {
 	}
 	segments, _ := filepath.Glob(filepath.Join(s.archiveDir, "*.jsonl"))
 	sort.Strings(segments)
+	if s.segments == nil {
+		s.segments = map[string]cachedSegment{}
+	}
 	var all []Event
 	for _, seg := range segments {
-		evs, _, err := readEventFile(seg)
+		info, err := os.Stat(seg)
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, evs...)
+		cached, ok := s.segments[seg]
+		if !ok || cached.size != info.Size() {
+			evs, _, err := readEventFile(seg)
+			if err != nil {
+				return nil, err
+			}
+			cached = cachedSegment{size: info.Size(), events: evs}
+			s.segments[seg] = cached
+		}
+		all = append(all, cached.events...)
 	}
 	tail, _, err := readEventFile(s.logPath)
 	if err != nil {
@@ -364,6 +386,25 @@ func (s *store) events() ([]Event, error) {
 	all = append(all, tail...)
 	sort.SliceStable(all, func(i, j int) bool { return all[i].Seq < all[j].Seq })
 	return all, nil
+}
+
+// boardStats returns statistics for a board, folding only the events that
+// arrived since the last call into a cached walker.
+func (s *store) boardStats(b *Board, now time.Time, days int) (boardStats, error) {
+	events, err := s.events()
+	if err != nil {
+		return boardStats{}, err
+	}
+	if s.walkers == nil {
+		s.walkers = map[string]*statsWalker{}
+	}
+	w := s.walkers[b.ID]
+	if w == nil || !w.compatible(b) || (len(events) > 0 && events[len(events)-1].Seq < w.seq) {
+		w = newStatsWalker(b)
+		s.walkers[b.ID] = w
+	}
+	w.feed(events)
+	return w.finish(b, now, days), nil
 }
 
 // append writes events to the tail log under the lock and numbers them.
@@ -699,6 +740,7 @@ func normalizeBoard(b *Board) {
 	if b.NextID <= maxID {
 		b.NextID = maxID + 1
 	}
+	b.touch()
 }
 
 // migrateV1 converts the original single-board format, where each task had

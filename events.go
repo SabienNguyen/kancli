@@ -178,6 +178,7 @@ func (f *File) apply(e Event) error {
 		}
 		if b.Task(t.ID) == nil {
 			b.Tasks = append(b.Tasks, t)
+			b.touch()
 			if b.NextID <= t.ID {
 				b.NextID = t.ID + 1
 			}
@@ -234,6 +235,7 @@ func (f *File) apply(e Event) error {
 			return err
 		}
 		nb.rec, nb.clock = b.rec, prevClock
+		nb.gen = b.gen + 1
 		*b = nb
 		b.clock = func() time.Time { return at }
 	default:

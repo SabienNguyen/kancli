@@ -412,3 +412,73 @@ func TestEventsEqualAfterJSONRoundTrip(t *testing.T) {
 		t.Errorf("round trip: %v %+v", err, back)
 	}
 }
+
+func TestIncrementalStatsMatchFullWalk(t *testing.T) {
+	f := demoFile()
+	st := newStore("")
+	if err := st.save(f); err != nil {
+		t.Fatal(err)
+	}
+	b := f.Active()
+	now := timeNow()
+	all, _ := st.events()
+	full := computeStats(b, all, now, 90)
+
+	// Feed the same events in three chunks to a persistent walker.
+	w := newStatsWalker(b)
+	third := len(all) / 3
+	w.feed(all[:third])
+	w.feed(all[:2*third]) // overlap is skipped by sequence
+	w.feed(all)
+	inc := w.finish(b, now, 90)
+	fullJSON, _ := json.Marshal(full)
+	incJSON, _ := json.Marshal(inc)
+	if string(fullJSON) != string(incJSON) {
+		t.Errorf("incremental stats differ from a full walk:\n%s\n%s", incJSON, fullJSON)
+	}
+
+	// The store caches the walker and folds in new events.
+	first, err := st.boardStats(b, now, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Events != full.Events {
+		t.Errorf("cached stats events = %d, want %d", first.Events, full.Events)
+	}
+	b.AddTask(Task{Title: "later", Column: "in_progress"}) //nolint:errcheck // test data
+	st.save(f)                                             //nolint:errcheck // test data
+	second, _ := st.boardStats(b, now, 90)
+	if second.Events != first.Events+1 || second.InProgress != first.InProgress+1 {
+		t.Errorf("new event not folded in: events %d→%d wip %d→%d", first.Events, second.Events, first.InProgress, second.InProgress)
+	}
+	// Changing the done column invalidates the walker.
+	b.AddColumn("Shipped", "", 0) //nolint:errcheck // test data
+	third2, _ := st.boardStats(b, now, 90)
+	if len(third2.Finished) != 0 {
+		t.Errorf("after a new last column nothing should count as finished, got %d", len(third2.Finished))
+	}
+}
+
+func TestTaskIndexStaysCorrect(t *testing.T) {
+	b := newTestBoard()
+	if b.Task(3) == nil || b.taskIndex(3) != 2 {
+		t.Fatal("index lookup failed")
+	}
+	b.DeleteTask(2)
+	if b.taskIndex(3) != 1 || b.Task(2) != nil || b.taskIndex(99) != -1 {
+		t.Error("index not updated after delete")
+	}
+	b.MoveTask(1, "done") //nolint:errcheck // test data
+	if b.taskIndex(1) != len(b.Tasks)-1 {
+		t.Error("index not updated after move")
+	}
+	// Direct edits to the slice are still handled.
+	b.Tasks = append(b.Tasks, Task{ID: 500, Title: "direct", Column: "todo"})
+	if b.Task(500) == nil {
+		t.Error("index should self-heal after a direct append")
+	}
+	b.Tasks = b.Tasks[1:]
+	if b.Task(b.Tasks[0].ID) == nil || b.taskIndex(b.Tasks[0].ID) != 0 {
+		t.Error("index should self-heal after a direct removal")
+	}
+}

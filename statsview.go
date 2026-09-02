@@ -71,13 +71,13 @@ func (v *statsView) cycleWindow() {
 
 // load recomputes the statistics from the store.
 func (v *statsView) load(b *Board, s *store, now time.Time) {
-	events, err := s.events()
+	st, err := s.boardStats(b, now, v.days)
 	if err != nil {
 		v.err = err
 		return
 	}
 	v.err = nil
-	v.stats = computeStats(b, events, now, v.days)
+	v.stats = st
 	v.render()
 }
 

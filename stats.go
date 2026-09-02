@@ -90,88 +90,111 @@ type taskTrack struct {
 	gone      bool // archived or deleted
 }
 
-// computeStats derives analytics for a board from its event history. days
-// bounds the throughput and WIP series and the finished-task sample.
-func computeStats(b *Board, events []Event, now time.Time, days int) boardStats {
-	if days <= 0 {
-		days = 90
+type wipDelta struct {
+	at time.Time
+	n  int
+}
+
+// statsWalker folds events into the intermediate state that boardStats is
+// derived from. It can be kept between calls and fed only new events.
+type statsWalker struct {
+	board  string
+	first  string
+	done   string
+	seq    int64
+	events int
+
+	tracks   map[int]*taskTrack
+	stays    map[string][]time.Duration
+	wip      []wipDelta
+	finished []finishedTask
+	weeks    map[time.Time]*weekCount
+}
+
+func newStatsWalker(b *Board) *statsWalker {
+	w := &statsWalker{board: b.ID, tracks: map[int]*taskTrack{}, stays: map[string][]time.Duration{}, weeks: map[time.Time]*weekCount{}}
+	if len(b.Columns) > 0 {
+		w.first = b.Columns[0].ID
+		w.done = b.DoneColumn().ID
 	}
-	st := boardStats{Board: b.ID, Generated: now, Days: days}
+	return w
+}
+
+// compatible reports whether the walker's notion of first and done columns
+// still matches the board; if not, the history must be re-walked.
+func (w *statsWalker) compatible(b *Board) bool {
 	first, done := "", ""
 	if len(b.Columns) > 0 {
 		first = b.Columns[0].ID
 		done = b.DoneColumn().ID
 	}
-	colName := func(id string) string {
-		if c := b.Column(id); c != nil {
-			return c.Name
-		}
-		return id
-	}
-	isWIP := func(col string) bool { return col != "" && col != first && col != done }
+	return w.board == b.ID && w.first == first && w.done == done
+}
 
-	tracks := map[int]*taskTrack{}
-	stays := map[string][]time.Duration{}
-	type delta struct {
-		at time.Time
-		n  int
-	}
-	var wipDeltas []delta
-	var finished []finishedTask
-	weeks := map[time.Time]*weekCount{}
-	weekOf := func(t time.Time) time.Time {
-		y, m, d := t.Date()
-		day := time.Date(y, m, d, 0, 0, 0, 0, t.Location())
-		offset := (int(day.Weekday()) + 6) % 7 // Monday = 0
-		return day.AddDate(0, 0, -offset)
-	}
-	bump := func(t time.Time, created, doneN int) {
-		w := weekOf(t)
-		wc := weeks[w]
-		if wc == nil {
-			wc = &weekCount{Week: w}
-			weeks[w] = wc
-		}
-		wc.Created += created
-		wc.Done += doneN
-	}
-	enter := func(tr *taskTrack, col string, at time.Time) {
-		if tr.column != "" {
-			stays[tr.column] = append(stays[tr.column], at.Sub(tr.since))
-			if isWIP(tr.column) {
-				wipDeltas = append(wipDeltas, delta{at, -1})
-			}
-		}
-		tr.column, tr.since = col, at
-		if isWIP(col) {
-			wipDeltas = append(wipDeltas, delta{at, 1})
-		}
-		if col == done && tr.doneAt.IsZero() {
-			tr.doneAt = at
-			bump(at, 0, 1)
-			finished = append(finished, finishedTask{ID: tr.id, Title: tr.title, CreatedAt: tr.createdAt, DoneAt: at, Cycle: at.Sub(tr.createdAt), Labels: tr.labels})
-		} else if col != done {
-			tr.doneAt = time.Time{}
-		}
-	}
-	leave := func(tr *taskTrack, at time.Time) {
-		if tr.gone {
-			return
-		}
-		if tr.column != "" {
-			stays[tr.column] = append(stays[tr.column], at.Sub(tr.since))
-			if isWIP(tr.column) {
-				wipDeltas = append(wipDeltas, delta{at, -1})
-			}
-		}
-		tr.gone = true
-	}
+func (w *statsWalker) isWIP(col string) bool { return col != "" && col != w.first && col != w.done }
 
+func weekOf(t time.Time) time.Time {
+	y, m, d := t.Date()
+	day := time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+	offset := (int(day.Weekday()) + 6) % 7 // Monday = 0
+	return day.AddDate(0, 0, -offset)
+}
+
+func (w *statsWalker) bump(t time.Time, created, doneN int) {
+	wk := weekOf(t)
+	wc := w.weeks[wk]
+	if wc == nil {
+		wc = &weekCount{Week: wk}
+		w.weeks[wk] = wc
+	}
+	wc.Created += created
+	wc.Done += doneN
+}
+
+func (w *statsWalker) enter(tr *taskTrack, col string, at time.Time) {
+	if tr.column != "" {
+		w.stays[tr.column] = append(w.stays[tr.column], at.Sub(tr.since))
+		if w.isWIP(tr.column) {
+			w.wip = append(w.wip, wipDelta{at, -1})
+		}
+	}
+	tr.column, tr.since = col, at
+	if w.isWIP(col) {
+		w.wip = append(w.wip, wipDelta{at, 1})
+	}
+	if col == w.done && tr.doneAt.IsZero() {
+		tr.doneAt = at
+		w.bump(at, 0, 1)
+		w.finished = append(w.finished, finishedTask{ID: tr.id, Title: tr.title, CreatedAt: tr.createdAt, DoneAt: at, Cycle: at.Sub(tr.createdAt), Labels: tr.labels})
+	} else if col != w.done {
+		tr.doneAt = time.Time{}
+	}
+}
+
+func (w *statsWalker) leave(tr *taskTrack, at time.Time) {
+	if tr.gone {
+		return
+	}
+	if tr.column != "" {
+		w.stays[tr.column] = append(w.stays[tr.column], at.Sub(tr.since))
+		if w.isWIP(tr.column) {
+			w.wip = append(w.wip, wipDelta{at, -1})
+		}
+	}
+	tr.gone = true
+}
+
+// feed applies events the walker has not seen yet. Events must arrive in
+// sequence order.
+func (w *statsWalker) feed(events []Event) {
 	for _, e := range events {
-		if e.Board != b.ID {
+		if e.Board != w.board || (e.Seq != 0 && e.Seq <= w.seq) {
 			continue
 		}
-		st.Events++
+		if e.Seq > w.seq {
+			w.seq = e.Seq
+		}
+		w.events++
 		switch e.Kind {
 		case evTaskCreated:
 			var t Task
@@ -179,37 +202,37 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 				continue
 			}
 			tr := &taskTrack{id: t.ID, title: t.Title, labels: t.Labels, createdAt: e.At}
-			tracks[t.ID] = tr
-			bump(e.At, 1, 0)
-			enter(tr, t.Column, e.At)
+			w.tracks[t.ID] = tr
+			w.bump(e.At, 1, 0)
+			w.enter(tr, t.Column, e.At)
 		case evTaskUpdated:
 			var t Task
 			if err := json.Unmarshal(e.Data, &t); err == nil {
-				if tr := tracks[t.ID]; tr != nil {
+				if tr := w.tracks[t.ID]; tr != nil {
 					tr.title, tr.labels = t.Title, t.Labels
 				}
 			}
 		case evTaskMoved:
-			if tr := tracks[e.Task]; tr != nil && !tr.gone {
-				enter(tr, e.To, e.At)
+			if tr := w.tracks[e.Task]; tr != nil && !tr.gone {
+				w.enter(tr, e.To, e.At)
 			}
 		case evTaskArchived, evTaskDeleted:
-			if tr := tracks[e.Task]; tr != nil {
-				leave(tr, e.At)
+			if tr := w.tracks[e.Task]; tr != nil {
+				w.leave(tr, e.At)
 			}
 		case evTaskRestored:
-			if tr := tracks[e.Task]; tr != nil && tr.gone {
+			if tr := w.tracks[e.Task]; tr != nil && tr.gone {
 				tr.gone = false
 				tr.column = ""
-				enter(tr, e.To, e.At)
+				w.enter(tr, e.To, e.At)
 			}
 		case evColumnRemoved:
-			for _, tr := range tracks {
+			for _, tr := range w.tracks {
 				if !tr.gone && tr.column == e.From {
 					if e.To == "" {
-						leave(tr, e.At)
+						w.leave(tr, e.At)
 					} else {
-						enter(tr, e.To, e.At)
+						w.enter(tr, e.To, e.At)
 					}
 				}
 			}
@@ -222,35 +245,51 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 			seen := map[int]bool{}
 			for _, t := range nb.Tasks {
 				seen[t.ID] = true
-				tr := tracks[t.ID]
+				tr := w.tracks[t.ID]
 				if tr == nil {
 					tr = &taskTrack{id: t.ID, title: t.Title, labels: t.Labels, createdAt: t.CreatedAt}
-					tracks[t.ID] = tr
-					enter(tr, t.Column, e.At)
+					w.tracks[t.ID] = tr
+					w.enter(tr, t.Column, e.At)
 					continue
 				}
 				switch {
 				case t.Archived() && !tr.gone:
-					leave(tr, e.At)
+					w.leave(tr, e.At)
 				case !t.Archived() && tr.gone:
 					tr.gone, tr.column = false, ""
-					enter(tr, t.Column, e.At)
+					w.enter(tr, t.Column, e.At)
 				case !t.Archived() && tr.column != t.Column:
-					enter(tr, t.Column, e.At)
+					w.enter(tr, t.Column, e.At)
 				}
 			}
-			for id, tr := range tracks {
+			for id, tr := range w.tracks {
 				if !seen[id] {
-					leave(tr, e.At)
+					w.leave(tr, e.At)
 				}
 			}
 		}
+	}
+}
+
+// finish derives boardStats from the walked state and the live board. It
+// does not modify the walker, so it can be called repeatedly.
+func (w *statsWalker) finish(b *Board, now time.Time, days int) boardStats {
+	if days <= 0 {
+		days = 90
+	}
+	st := boardStats{Board: b.ID, Generated: now, Days: days, Events: w.events}
+	done := w.done
+	colName := func(id string) string {
+		if c := b.Column(id); c != nil {
+			return c.Name
+		}
+		return id
 	}
 
 	// Headline counts from the live board.
 	for _, t := range b.Live() {
 		st.Live++
-		if isWIP(t.Column) {
+		if w.isWIP(t.Column) {
 			st.InProgress++
 		}
 		if t.Column != done {
@@ -265,7 +304,7 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 
 	// Finished tasks within the window, newest first.
 	cutoff := now.AddDate(0, 0, -days)
-	for _, ft := range finished {
+	for _, ft := range w.finished {
 		if ft.DoneAt.After(cutoff) {
 			st.Finished = append(st.Finished, ft)
 		}
@@ -279,7 +318,7 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 
 	// Column stays.
 	for _, c := range b.Columns {
-		ds := stays[c.ID]
+		ds := w.stays[c.ID]
 		mean, median, _ := summarize(ds)
 		st.Stays = append(st.Stays, columnStay{Column: c.ID, Name: c.Name, Samples: len(ds), Mean: mean, Median: median})
 	}
@@ -288,16 +327,17 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 	nWeeks := (days + 6) / 7
 	start := weekOf(now).AddDate(0, 0, -7*(nWeeks-1))
 	for i := 0; i < nWeeks; i++ {
-		w := start.AddDate(0, 0, 7*i)
-		wc := weekCount{Week: w}
-		if got := weeks[w]; got != nil {
+		wk := start.AddDate(0, 0, 7*i)
+		wc := weekCount{Week: wk}
+		if got := w.weeks[wk]; got != nil {
 			wc = *got
 		}
 		st.Weeks = append(st.Weeks, wc)
 	}
 
 	// WIP at the end of each day.
-	sort.SliceStable(wipDeltas, func(i, j int) bool { return wipDeltas[i].at.Before(wipDeltas[j].at) })
+	deltas := append([]wipDelta(nil), w.wip...)
+	sort.SliceStable(deltas, func(i, j int) bool { return deltas[i].at.Before(deltas[j].at) })
 	nDays := min(days, 60)
 	y, mo, d := now.Date()
 	todayStart := time.Date(y, mo, d, 0, 0, 0, 0, now.Location())
@@ -308,7 +348,7 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 			end = now.Add(time.Nanosecond)
 		}
 		count := 0
-		for _, dl := range wipDeltas {
+		for _, dl := range deltas {
 			if dl.at.Before(end) {
 				count += dl.n
 			}
@@ -322,7 +362,7 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 			continue
 		}
 		since := t.CreatedAt
-		if tr := tracks[t.ID]; tr != nil && !tr.since.IsZero() {
+		if tr := w.tracks[t.ID]; tr != nil && !tr.since.IsZero() {
 			since = tr.since
 		}
 		st.Aging = append(st.Aging, agingTask{ID: t.ID, Title: t.Title, Column: colName(t.Column), Since: since, Age: now.Sub(since)})
@@ -369,6 +409,13 @@ func computeStats(b *Board, events []Event, now time.Time, days int) boardStats 
 		return st.Labels[i].Label < st.Labels[j].Label
 	})
 	return st
+}
+
+// computeStats derives analytics for a board from its full event history.
+func computeStats(b *Board, events []Event, now time.Time, days int) boardStats {
+	w := newStatsWalker(b)
+	w.feed(events)
+	return w.finish(b, now, days)
 }
 
 // summarize returns mean, median and 90th percentile of durations.

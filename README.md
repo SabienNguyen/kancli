@@ -307,6 +307,13 @@ and replays the handful of events since it; moving a card appends one line.
 Analytics read the archived segments plus the tail, which is exactly the
 same data, so there is nothing to export or keep in sync.
 
+In memory the board is plain slices: tasks in board order, with a small
+id-to-position map for lookups. There are no trees or indexes beyond that,
+because a personal board is a few thousand contiguous structs at most and a
+scan of those is faster than any pointer-chasing structure. Statistics are
+incremental: archived segments are parsed once and cached, and the stats
+walker keeps its state between calls so only new events are folded in.
+
 ```mermaid
 sequenceDiagram
     participant U as You

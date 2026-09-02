@@ -32,6 +32,24 @@ type Board struct {
 
 	rec   *recorder
 	clock func() time.Time
+
+	// byID maps task id to position in Tasks. It is rebuilt whenever gen
+	// changes; mutations bump gen with touch().
+	byID    map[int]int
+	byIDGen uint64
+	gen     uint64
+}
+
+// touch marks the task slice as changed so the id index is rebuilt.
+func (b *Board) touch() { b.gen++ }
+
+// reindex rebuilds the id index.
+func (b *Board) reindex() {
+	b.byID = make(map[int]int, len(b.Tasks))
+	for i := range b.Tasks {
+		b.byID[b.Tasks[i].ID] = i
+	}
+	b.byIDGen = b.gen
 }
 
 // Column is one lane on a board. The last column is treated as "done".
@@ -371,17 +389,24 @@ func (b *Board) DoneColumn() *Column {
 
 // Task finds a task by ID.
 func (b *Board) Task(id int) *Task {
-	for i := range b.Tasks {
-		if b.Tasks[i].ID == id {
-			return &b.Tasks[i]
-		}
+	if i := b.taskIndex(id); i >= 0 {
+		return &b.Tasks[i]
 	}
 	return nil
 }
 
+// taskIndex returns the position of a task, using the id index. The index
+// is verified against the slice so direct edits to Tasks stay safe.
 func (b *Board) taskIndex(id int) int {
-	for i := range b.Tasks {
-		if b.Tasks[i].ID == id {
+	if b.byID == nil || b.byIDGen != b.gen || len(b.byID) != len(b.Tasks) {
+		b.reindex()
+	}
+	if i, ok := b.byID[id]; ok {
+		if i < len(b.Tasks) && b.Tasks[i].ID == id {
+			return i
+		}
+		b.reindex()
+		if i, ok := b.byID[id]; ok {
 			return i
 		}
 	}
@@ -483,6 +508,7 @@ func (b *Board) AddTask(t Task) (*Task, error) {
 	t.History = nil
 	t.logAt(now, "Created in %s", col.Name)
 	b.Tasks = append(b.Tasks, t)
+	b.touch()
 	added := &b.Tasks[len(b.Tasks)-1]
 	b.emit(Event{Kind: evTaskCreated, Task: t.ID, To: t.Column, Data: mustJSON(*added)})
 	return added, nil
@@ -562,6 +588,7 @@ func (b *Board) MoveTask(id int, colID string) error {
 	}
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, t)
+	b.touch()
 	b.emit(Event{Kind: evTaskMoved, Task: t.ID, From: fromID, To: col.ID})
 	return nil
 }
@@ -580,6 +607,7 @@ func (b *Board) ReorderTask(id int, delta int) bool {
 	for j := i + step; j >= 0 && j < len(b.Tasks); j += step {
 		if b.Tasks[j].Column == b.Tasks[i].Column && !b.Tasks[j].Archived() {
 			b.Tasks[i], b.Tasks[j] = b.Tasks[j], b.Tasks[i]
+			b.touch()
 			b.emit(Event{Kind: evTaskReordered, Task: id, Index: step})
 			return true
 		}
@@ -595,6 +623,7 @@ func (b *Board) DeleteTask(id int) bool {
 	}
 	col := b.Tasks[i].Column
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	b.touch()
 	b.emit(Event{Kind: evTaskDeleted, Task: id, From: col})
 	return true
 }
@@ -630,6 +659,7 @@ func (b *Board) RestoreTask(id int) bool {
 	tt := b.Tasks[i]
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, tt)
+	b.touch()
 	b.emit(Event{Kind: evTaskRestored, Task: id, To: tt.Column})
 	return true
 }
@@ -828,6 +858,7 @@ func (b *Board) RemoveColumn(id, moveTo string) error {
 		kept = append(kept, t)
 	}
 	b.Tasks = kept
+	b.touch()
 	b.Columns = append(b.Columns[:i], b.Columns[i+1:]...)
 	to := ""
 	if target != nil {
@@ -852,9 +883,10 @@ func (b *Board) MoveColumn(id string, delta int) bool {
 // Replace swaps in a whole board state (used by undo) and records it as a
 // single event so replay reproduces it.
 func (b *Board) Replace(nb Board) {
-	rec, clock := b.rec, b.clock
+	rec, clock, gen := b.rec, b.clock, b.gen
 	*b = nb
 	b.rec, b.clock = rec, clock
+	b.byID, b.gen = nil, gen+1
 	b.emit(Event{Kind: evBoardRestored, Data: mustJSON(nb)})
 }
 
