@@ -1,4 +1,4 @@
-module github.com/charmbracelet/kancli
+module github.com/SabienNguyen/kancli
 
 go 1.25.0
 

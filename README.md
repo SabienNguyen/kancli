@@ -16,21 +16,11 @@ It is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 It is a single-user, local tool by design. Everything lives in a few plain
 files on your machine; there is no server or account.
 
-```
- Kancli · Demo                                  1 overdue · 1 due today · ~/.config/kancli/board.json
-╭───────────────────────────────╮╭───────────────────────────────╮╭──────────────────────────────╮
-│    To Do 4                    ││    In Progress 2/2            ││    Done 2                    │
-│                               ││                               ││                              │
-│ │ #1 ↑ Write the release not… ││ │ #5 ‼ Ship the CLI subcomma… ││ │ #7 Upgrade to Bubble Tea…  │
-│ │ Cover the new search synta… ││ │ add, list, move, done, exp… ││ │                            │
-│ │ tomorrow · @sam · +docs · … ││ │ today · @sam · +feature · … ││ │ +chore                     │
-│                               ││                               ││                              │
-│   #2 • Fix the flaky termina… ││   #6 • Review the mouse supp… ││   #8 ↓ Stay cool             │
-│                               ││                               ││   as a cucumber              │
-│   2d overdue · +bug · +tests  ││   in 3d · @alex · +review     ││                              │
-╰───────────────────────────────╯╰───────────────────────────────╯╰──────────────────────────────╯
- n new task • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit
-```
+![The board: three columns with priorities, due dates, labels and a WIP limit](docs/screenshots/01-board.png)
+
+| Stats | Task detail | Search |
+| --- | --- | --- |
+| ![Stats screen with throughput and WIP sparklines and a time-in-column bar chart](docs/screenshots/02-stats.png) | ![Task detail with checklist, similar tasks and activity](docs/screenshots/03-detail.png) | ![Relevance-ranked search across all columns](docs/screenshots/04-search.png) |
 
 ## Contents
 
@@ -71,19 +61,54 @@ files on your machine; there is no server or account.
 
 ## Install
 
-Download a binary for Linux, macOS, Windows or FreeBSD from the
-[releases page](https://github.com/SabienNguyen/kancli/releases), or build
-from source with Go 1.25 or newer:
+Pick whichever fits. All of them put a single `kancli` binary on your `PATH`,
+so you can run it from any directory; your board lives in your data
+directory (see [Storage and files](#storage-and-files)), never in the
+directory you happen to be in.
+
+**With Go (any platform):**
+
+```sh
+go install github.com/SabienNguyen/kancli/cmd/kancli@latest
+```
+
+Go 1.25 or newer is needed; older Go versions download it automatically.
+The binary lands in `$(go env GOPATH)/bin`, which is usually already on
+your `PATH`.
+
+**With the install script (Linux, macOS, FreeBSD):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SabienNguyen/kancli/main/install.sh | sh
+```
+
+It downloads the release binary for your platform into `~/.local/bin`, or
+builds it with `go install` when no release matches. Set `KANCLI_BINDIR` to
+choose another directory.
+
+**On Windows:**
+
+```powershell
+irm https://raw.githubusercontent.com/SabienNguyen/kancli/main/install.ps1 | iex
+```
+
+**From a clone:**
 
 ```sh
 git clone https://github.com/SabienNguyen/kancli.git
 cd kancli
-go build
-./kancli -demo      # sample board with three weeks of history, nothing is saved
-./kancli            # your own board
+make install        # builds and copies kancli to ~/.local/bin
+kancli -demo        # sample board with three weeks of history, nothing is saved
+kancli              # your own board
 ```
 
-The `duckdb` command-line tool is optional; it enables `kancli stats -q` and
+`make` targets: `build`, `install`, `uninstall`, `run`, `demo`, `test`,
+`lint`, `release-snapshot`. Without make: `go build ./cmd/kancli`.
+
+Release archives for Linux, macOS, Windows and FreeBSD are attached to
+tagged versions on the
+[releases page](https://github.com/SabienNguyen/kancli/releases). The
+`duckdb` command-line tool is optional; it enables `kancli stats -q` and
 Parquet export. Everything else is pure Go.
 
 ## The board
@@ -360,8 +385,8 @@ sequenceDiagram
     participant C as kancli add (cron)
     C->>L: append seq 125
     A->>A: user moves a card (seq 126 pending)
-    A->>L: lock; notices size grew
-    A->>L: append seq 126; unlock
+    A->>L: lock, notices size grew
+    A->>L: append seq 126, unlock
     A->>L: re-read tail, replay 125 and 126
     A-->>A: "Merged changes from another kancli"
 ```
@@ -476,16 +501,33 @@ keys; an empty list disables the action.
 
 ## Development
 
-```sh
-go test -race ./...
-golangci-lint run
+```
+cmd/kancli/        the executable: flag parsing hands off to internal/cli
+internal/board/    the domain: boards, tasks, events and replay, dates,
+                   search, sorting, stats and the review report
+internal/store/    snapshot + event log on disk, locking, compaction,
+                   as-of loading, and the DuckDB bridge
+internal/ui/       the Bubble Tea app: board, forms, detail, stats screen,
+                   pickers, themes and key maps
+internal/cli/      the non-interactive commands and environment setup
+internal/config/   the config file
+internal/desktop/  opening links and desktop notifications
+docs/screenshots/  the images in this README
 ```
 
-CI runs `gofmt`, `go vet`, the tests on Linux, macOS and Windows, and
-golangci-lint. Pushing a tag like `v1.0.0` builds release binaries with
-GoReleaser (see `.goreleaser.yaml`, which also has a commented Homebrew tap
-section). Set `KANCLI_DEBUG=1` to write Bubble Tea debug logs to
-`./debug.log`.
+`board` has no dependencies on the other packages; `store` depends on
+`board`; `ui` and `cli` depend on both. Tests live next to the code they
+cover.
+
+```sh
+make test           # go test -race ./...
+make lint           # gofmt, go vet, golangci-lint
+```
+
+CI runs the same on Linux, macOS and Windows. Pushing a tag like `v1.0.0`
+builds release binaries with GoReleaser (see `.goreleaser.yaml`, which also
+has a commented Homebrew tap section). Set `KANCLI_DEBUG=1` to write Bubble
+Tea debug logs to `./debug.log`.
 
 ## Credits
 
