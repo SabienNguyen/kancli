@@ -1350,7 +1350,14 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 			return m, m.setStatus("%v", err)
 		}
 		m.renderDetail()
-		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), to)
+		// parseLinkInput normalises the inverse kinds, so "blocked-by #2"
+		// typed on task 1 is stored as 2 blocks 1. Name whichever endpoint
+		// is not the task the prompt was opened on, never ref twice.
+		other := to
+		if from != msg.ref {
+			other = from
+		}
+		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), other)
 	case promptAttachment:
 		if text == "" {
 			m.renderDetail()

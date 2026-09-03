@@ -14,6 +14,15 @@ import (
 )
 
 // runCLI runs the binary's argument parser against a temp data file.
+// newStore returns a store that is closed when the test ends, so it never
+// holds board.db past the temp directory's cleanup.
+func newStore(t *testing.T, path string) *store.Store {
+	t.Helper()
+	st := store.New(path)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 func runCLI(t *testing.T, path string, args ...string) (string, string, int) {
 	t.Helper()
 	var out, errb bytes.Buffer
@@ -315,7 +324,7 @@ func TestCLIStatsLogReviewCompactAsOf(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Snapshot written") || !strings.Contains(out, "folded") {
 		t.Errorf("compact: %q", out)
 	}
-	st2 := store.New(path)
+	st2 := newStore(t, path)
 	if _, err := st2.Load(); err != nil || st2.TailEvents() != 0 {
 		t.Errorf("after compact tail=%d err=%v", st2.TailEvents(), err)
 	}

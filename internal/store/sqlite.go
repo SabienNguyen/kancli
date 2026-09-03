@@ -121,6 +121,7 @@ func (s *Store) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	openStores.Add(1)
 	return db, nil
 }
 

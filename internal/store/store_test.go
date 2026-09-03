@@ -16,6 +16,15 @@ import (
 	"github.com/SabienNguyen/kancli/internal/config"
 )
 
+// newTestStore returns a store for path that is closed when the test ends,
+// so it never holds board.db past the temp directory's cleanup.
+func newTestStore(t *testing.T, path string) *Store {
+	t.Helper()
+	st := New(path)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 // seedSnapshot writes state (any released file version) into a fresh
 // database as the snapshot at sequence zero, which is what the importer
 // leaves behind for a board that predates the event log.
@@ -162,7 +171,7 @@ func TestStoreLogCompactionAndAsOf(t *testing.T) {
 	if !slices.Contains(snaps, int64(3+CompactAfter)) {
 		t.Errorf("no snapshot for the folded tail: %v", snaps)
 	}
-	reloaded, err := New(path).Load()
+	reloaded, err := newTestStore(t, path).Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +878,7 @@ func TestCloseCheckpointsTheLog(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Errorf("Close should be idempotent: %v", err)
 	}
-	again, err := New(path).Load()
+	again, err := newTestStore(t, path).Load()
 	if err != nil {
 		t.Fatal(err)
 	}

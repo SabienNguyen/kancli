@@ -28,10 +28,20 @@ func testStyles() (Styles, Glyphs) {
 	return NewStyles(th, false), NewGlyphs(false)
 }
 
+// newStore returns a store that is closed when the test ends. A store that
+// stays open holds board.db, and on Windows an open handle stops the temp
+// directory from being removed.
+func newStore(t *testing.T, path string) *store.Store {
+	t.Helper()
+	st := store.New(path)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
 // newTestApp returns a sized app with the demo data backed by a temp file.
 func newTestApp(t *testing.T) (App, *store.Store) {
 	t.Helper()
-	st := store.New(filepath.Join(t.TempDir(), "board.json"))
+	st := newStore(t, filepath.Join(t.TempDir(), "board.json"))
 	f := board.SampleFile()
 	if err := st.Save(f); err != nil {
 		t.Fatal(err)

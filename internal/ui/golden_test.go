@@ -7,7 +7,6 @@ import (
 
 	"github.com/SabienNguyen/kancli/internal/board"
 	"github.com/SabienNguyen/kancli/internal/config"
-	"github.com/SabienNguyen/kancli/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
@@ -110,7 +109,7 @@ func goldenApp(t *testing.T, w, h int, theme string, ascii bool, cfg config.Conf
 	cfg.Images = "off"
 	cfg.ASCII = ascii
 	f := board.DemoFile()
-	st := store.New("")
+	st := newStore(t, "")
 	m := New(cfg, NewStyles(th, ascii), NewGlyphs(ascii), st, f)
 	return teatest.NewTestModel(t, m, teatest.WithInitialTermSize(w, h))
 }

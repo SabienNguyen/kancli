@@ -32,7 +32,7 @@ type Env struct {
 
 // NewEnv loads the config, resolves the data file and reads it. actor is
 // recorded on every event this process writes.
-func NewEnv(o Options, actor string) (*Env, error) {
+func NewEnv(o Options, actor string) (env *Env, err error) {
 	cfgPath := o.configPath
 	if cfgPath == "" {
 		p, err := config.DefaultPath()
@@ -58,6 +58,14 @@ func NewEnv(o Options, actor string) (*Env, error) {
 		return nil, err
 	}
 	e := &Env{Opts: o, Cfg: cfg, Styles: ui.NewStyles(th, cfg.ASCII), Glyphs: ui.NewGlyphs(cfg.ASCII)}
+	// A step after the store opens can still fail — a bad -as-of, a Load
+	// error on data a legacy import just wrote. The caller never sees the
+	// Env in that case, so nothing else can close the store.
+	defer func() {
+		if err != nil && e.Store != nil {
+			_ = e.Store.Close()
+		}
+	}()
 
 	if o.asOf != "" {
 		t, err := parseAsOf(o.asOf, board.Now())

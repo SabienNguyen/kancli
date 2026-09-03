@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/SabienNguyen/kancli/internal/board"
@@ -48,6 +49,16 @@ type Store struct {
 
 	upgrade *Upgrade // set when opening data an older kancli wrote
 }
+
+// openStores counts the stores that currently hold an open database.
+// A store that is never closed keeps its file handle, and on Windows that
+// makes the directory holding board.db impossible to remove; the test
+// packages assert this counter is back to zero when they finish.
+var openStores atomic.Int64
+
+// OpenStores reports how many stores currently hold an open database. It
+// exists for the leak guards in the tests.
+func OpenStores() int { return int(openStores.Load()) }
 
 // Upgrade describes a data file that an older kancli wrote and this one has
 // just opened.
@@ -127,6 +138,7 @@ func (s *Store) Close() error {
 	}
 	db := s.db
 	s.db, s.openErr = nil, nil
+	openStores.Add(-1)
 	var errs []error
 	if s.path != "" {
 		if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
