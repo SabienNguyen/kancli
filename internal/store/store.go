@@ -260,8 +260,18 @@ func (s *Store) bootstrap(f *board.File) error {
 
 // LoadAsOf reconstructs the state at a point in time from the newest
 // snapshot before it plus the events up to it. The result is frozen.
+//
+// "Before it" is measured in sequence numbers: the cut is the last event
+// stamped at or before t, and the base is the newest snapshot that covers
+// no more than that. A snapshot's own at says when it was folded, which
+// for imported or bulk-written history has nothing to do with the period
+// it holds; it is kept only for the retention buckets.
 func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
-	base, snapSeq, found, err := s.readSnapshot(t)
+	cut, err := s.cutSeq(t)
+	if err != nil {
+		return nil, err
+	}
+	base, snapSeq, found, err := s.readSnapshotAt(cut)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +285,7 @@ func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
 		}
 		return nil, fmt.Errorf("no snapshot from before %s", t.Format(board.DateLayout))
 	}
-	events, err := s.readEvents(snapSeq, t)
+	events, err := s.readEventsThrough(snapSeq, cut, t)
 	if err != nil {
 		return nil, err
 	}

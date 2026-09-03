@@ -192,18 +192,52 @@ type snapshotRow struct {
 	at  time.Time
 }
 
-// readSnapshot returns the newest snapshot at or before upTo (a zero time
-// means "the newest"), or nil when the database holds none.
+// cutSeq is the highest event sequence stamped at or before t, or zero
+// when no event is that old. It is what a point in time means to the log.
+//
+// Snapshots are chosen against it rather than against their own at, which
+// records when the fold happened and not what it covers: history that was
+// imported or written in bulk carries today's snapshots over events dated
+// years back, and picking by wall clock then falls all the way to the
+// empty base and replays everything.
+func (s *Store) cutSeq(t time.Time) (int64, error) {
+	db, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	var seq sql.NullInt64
+	if err := db.QueryRow(`SELECT max(seq) FROM events WHERE at <= ?`, formatTime(t)).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("read %s: %w", s.Path(), err)
+	}
+	return seq.Int64, nil
+}
+
+// readSnapshot returns the newest snapshot covering no more than the events
+// up to upTo (a zero time means "the newest"), or nil when the database
+// holds none.
 func (s *Store) readSnapshot(upTo time.Time) (*board.File, int64, bool, error) {
+	cut := int64(-1) // negative: no upper bound
+	if !upTo.IsZero() {
+		var err error
+		if cut, err = s.cutSeq(upTo); err != nil {
+			return nil, 0, false, err
+		}
+	}
+	return s.readSnapshotAt(cut)
+}
+
+// readSnapshotAt returns the newest snapshot at or before sequence cut. A
+// negative cut asks for the newest snapshot of all.
+func (s *Store) readSnapshotAt(cut int64) (*board.File, int64, bool, error) {
 	db, err := s.conn()
 	if err != nil {
 		return nil, 0, false, err
 	}
 	query := `SELECT seq, state FROM snapshots ORDER BY seq DESC LIMIT 1`
 	args := []any{}
-	if !upTo.IsZero() {
-		query = `SELECT seq, state FROM snapshots WHERE at <= ? ORDER BY seq DESC LIMIT 1`
-		args = append(args, formatTime(upTo))
+	if cut >= 0 {
+		query = `SELECT seq, state FROM snapshots WHERE seq <= ? ORDER BY seq DESC LIMIT 1`
+		args = append(args, cut)
 	}
 	var seq int64
 	var blob []byte
@@ -351,16 +385,30 @@ func scanEvents(rows *sql.Rows) ([]board.Event, error) {
 
 // readEvents returns the events after seq, optionally stopping at a time.
 func (s *Store) readEvents(after int64, upTo time.Time) ([]board.Event, error) {
+	return s.readEventsThrough(after, -1, upTo)
+}
+
+// readEventsThrough returns the events after seq and at or before sequence
+// through (negative: no bound), optionally stopping at a time as well. The
+// two bounds agree for well-formed history; keeping both means an event
+// whose timestamp runs ahead of its sequence still cannot leak into a view
+// of the past.
+func (s *Store) readEventsThrough(after, through int64, upTo time.Time) ([]board.Event, error) {
 	db, err := s.conn()
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT ` + eventColumns + ` FROM events WHERE seq > ? ORDER BY seq`
+	query := `SELECT ` + eventColumns + ` FROM events WHERE seq > ?`
 	args := []any{after}
+	if through >= 0 {
+		query += ` AND seq <= ?`
+		args = append(args, through)
+	}
 	if !upTo.IsZero() {
-		query = `SELECT ` + eventColumns + ` FROM events WHERE seq > ? AND at <= ? ORDER BY seq`
+		query += ` AND at <= ?`
 		args = append(args, formatTime(upTo))
 	}
+	query += ` ORDER BY seq`
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.Path(), err)
@@ -426,7 +474,23 @@ func (s *Store) countTail() (int, error) {
 // last 30 days and one per ISO week before that.
 func prune(tx *sql.Tx, rows []snapshotRow, now time.Time) error {
 	keep := map[int64]bool{0: true}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].seq < rows[j].seq })
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].seq < rows[j].seq })
+	// The caller hands us the snapshot it is writing alongside the rows
+	// already in the table, and writing one is INSERT OR REPLACE: a
+	// compaction that adds no events rewrites the newest snapshot in place
+	// and the same sequence arrives twice. Collapsing repeats keeps that
+	// rewrite from using up two of the five newest slots (which is how the
+	// fifth-newest snapshot used to be deleted). The later row wins, since
+	// it carries the replacement's timestamp.
+	uniq := make([]snapshotRow, 0, len(rows))
+	for _, r := range rows {
+		if n := len(uniq); n > 0 && uniq[n-1].seq == r.seq {
+			uniq[n-1] = r
+			continue
+		}
+		uniq = append(uniq, r)
+	}
+	rows = uniq
 	for i := len(rows) - 1; i >= 0 && len(rows)-i <= 5; i-- {
 		keep[rows[i].seq] = true
 	}

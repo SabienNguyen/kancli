@@ -195,13 +195,28 @@ func readLegacyEvents(base string) ([]board.Event, error) {
 }
 
 // writeImported creates the database and fills it in one transaction.
-func (s *Store) writeImported(snaps []importedSnapshot, events []board.Event) error {
+//
+// The store opens its own connection the moment this returns, so this one
+// folds the write-ahead log back into board.db and closes first: a
+// checkpoint cannot truncate the log while another connection is holding
+// it, and leaving that to the driver's own close is what used to strand
+// board.db-wal and board.db-shm beside a freshly imported board.
+func (s *Store) writeImported(snaps []importedSnapshot, events []board.Event) (err error) {
 	db, err := sql.Open("sqlite", s.dsn())
 	if err != nil {
 		return fmt.Errorf("create %s: %w", s.Path(), err)
 	}
 	db.SetMaxOpenConns(1)
-	defer func() { _ = db.Close() }()
+	defer func() {
+		if err == nil && s.path != "" {
+			if _, cerr := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); cerr != nil {
+				err = fmt.Errorf("checkpoint %s: %w", s.Path(), cerr)
+			}
+		}
+		if cerr := db.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	if err := s.ensureSchema(db); err != nil {
 		return err
 	}
