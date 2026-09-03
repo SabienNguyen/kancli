@@ -99,6 +99,11 @@ func (s *Store) open() (*sql.DB, error) {
 			}
 		}
 	}
+	// A board still in the old file-store layout is imported first, so
+	// everything below opens the database the importer just built.
+	if err := s.maybeImportLegacy(); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", s.dsn())
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", s.Path(), err)

@@ -175,7 +175,8 @@ func (c *cli) prepare(actor string) error {
 	}
 	c.env = e
 	if up, ok := e.Store.Upgraded(); ok {
-		fmt.Fprintf(c.stderr, "kancli: upgraded your board from format v%d to v%d; the old files are in %s\n", up.From, up.To, up.Backup)
+		fmt.Fprintf(c.stderr, "kancli: moved your board into %s (format v%d → v%d); the old files are in %s\n",
+			e.Store.Path(), up.From, up.To, up.Backup)
 	}
 	for _, w := range e.Cfg.Warnings {
 		fmt.Fprintln(c.stderr, "kancli:", w)
