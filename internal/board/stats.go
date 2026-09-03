@@ -192,6 +192,47 @@ func (w *StatsWalker) leave(tr *taskTrack, at time.Time) {
 	tr.gone = true
 }
 
+// syncTrack re-syncs one task's track with the task as an undo left it:
+// task.reverted carries a single task, board.restored a whole board of
+// them, and both must fold in the same way.
+func (w *StatsWalker) syncTrack(t Task, at time.Time) {
+	tr := w.tracks[t.ID]
+	if tr == nil {
+		tr = &taskTrack{id: t.ID, title: t.Title, labels: t.Labels, createdAt: t.CreatedAt}
+		w.tracks[t.ID] = tr
+		w.enter(tr, t.Column, at)
+		return
+	}
+	switch {
+	case t.Archived() && !tr.gone:
+		w.leave(tr, at)
+	case !t.Archived() && tr.gone:
+		w.unfinish(tr, t.Column)
+		tr.gone, tr.column = false, ""
+		w.enter(tr, t.Column, at)
+	case !t.Archived() && tr.column != t.Column:
+		w.unfinish(tr, t.Column)
+		w.enter(tr, t.Column, at)
+	}
+}
+
+// unfinish takes back the completion recorded for a task that an undo has
+// moved back out of the done column: the task is not finished any more, so
+// neither its cycle time nor its week's throughput should say it is.
+func (w *StatsWalker) unfinish(tr *taskTrack, col string) {
+	if col == w.done || tr.doneAt.IsZero() {
+		return
+	}
+	for i := len(w.finished) - 1; i >= 0; i-- {
+		if w.finished[i].ID == tr.id && w.finished[i].DoneAt.Equal(tr.doneAt) {
+			w.finished = append(w.finished[:i], w.finished[i+1:]...)
+			break
+		}
+	}
+	w.bump(tr.doneAt, 0, -1)
+	tr.doneAt = time.Time{}
+}
+
 // feed applies events the walker has not seen yet. Events must arrive in
 // sequence order.
 func (w *StatsWalker) Feed(events []Event) {
@@ -244,6 +285,13 @@ func (w *StatsWalker) Feed(events []Event) {
 					}
 				}
 			}
+		case EvTaskReverted:
+			// Undo put one task back as it was; re-sync its track.
+			var t Task
+			if err := json.Unmarshal(e.Data, &t); err != nil {
+				continue
+			}
+			w.syncTrack(t, e.At)
 		case EvBoardRestored:
 			// Undo replaces the board wholesale; re-sync the tracks with it.
 			var nb Board
@@ -253,22 +301,7 @@ func (w *StatsWalker) Feed(events []Event) {
 			seen := map[int]bool{}
 			for _, t := range nb.Tasks {
 				seen[t.ID] = true
-				tr := w.tracks[t.ID]
-				if tr == nil {
-					tr = &taskTrack{id: t.ID, title: t.Title, labels: t.Labels, createdAt: t.CreatedAt}
-					w.tracks[t.ID] = tr
-					w.enter(tr, t.Column, e.At)
-					continue
-				}
-				switch {
-				case t.Archived() && !tr.gone:
-					w.leave(tr, e.At)
-				case !t.Archived() && tr.gone:
-					tr.gone, tr.column = false, ""
-					w.enter(tr, t.Column, e.At)
-				case !t.Archived() && tr.column != t.Column:
-					w.enter(tr, t.Column, e.At)
-				}
+				w.syncTrack(t, e.At)
 			}
 			for id, tr := range w.tracks {
 				if !seen[id] {

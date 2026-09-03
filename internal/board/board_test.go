@@ -979,3 +979,86 @@ func TestReplaceRestoresTaskOrder(t *testing.T) {
 		t.Errorf("replayed tasks:\n got %s\nwant %s", got, want)
 	}
 }
+
+// TestStatsWalkerFollowsUndo checks that an undo, which now reverts single
+// tasks rather than restoring the whole board, still moves the stats back.
+func TestStatsWalkerFollowsUndo(t *testing.T) {
+	f := NewFile()
+	f.rec.actor = "test"
+	b := f.Active()
+	start := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	at := start
+	b.SetClock(func() time.Time { return at })
+
+	task, err := b.AddTask(Task{Title: "undo me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = start.Add(time.Hour)
+	if err := b.MoveTask(task.ID, "in_progress"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A copy of the board as it was before the task was finished.
+	var before Board
+	if err := json.Unmarshal(MustJSON(b), &before); err != nil {
+		t.Fatal(err)
+	}
+
+	at = start.Add(2 * time.Hour)
+	if err := b.MoveTask(task.ID, b.DoneColumn().ID); err != nil {
+		t.Fatal(err)
+	}
+	at = start.Add(3 * time.Hour)
+	b.Replace(before)
+
+	events := f.rec.drain()
+	for i := range events {
+		events[i].Seq = int64(i + 1) // the store numbers events as it appends them
+	}
+	var reverted bool
+	for _, e := range events {
+		if e.Kind == EvTaskReverted {
+			reverted = true
+		}
+	}
+	if !reverted {
+		t.Fatalf("undo emitted no %s event: %+v", EvTaskReverted, events)
+	}
+	if got := b.Task(task.ID).Column; got != "in_progress" {
+		t.Fatalf("task column after undo = %q, want in_progress", got)
+	}
+
+	now := start.Add(4 * time.Hour)
+	w := NewStatsWalker(b)
+	w.Feed(events)
+	st := w.Finish(b, now, 90)
+
+	if len(st.Finished) != 0 || st.CycleMedian != 0 || st.CycleMean != 0 {
+		t.Errorf("undone task still counts as finished: %+v (cycle %v)", st.Finished, st.CycleMedian)
+	}
+	if st.InProgress != 1 {
+		t.Errorf("in progress = %d, want 1", st.InProgress)
+	}
+	if len(st.WIP) == 0 || st.WIP[len(st.WIP)-1].Count != 1 {
+		t.Errorf("wip = %+v, want the undone task in progress", st.WIP)
+	}
+	for _, wk := range st.Weeks {
+		if wk.Done != 0 {
+			t.Errorf("week %v still counts a completion: %+v", wk.Week, wk)
+		}
+	}
+
+	// The incremental walker and a full walk must agree, as they do in the
+	// store's own incremental test.
+	full := ComputeStats(b, events, now, 90)
+	inc := NewStatsWalker(b)
+	half := len(events) / 2
+	inc.Feed(events[:half])
+	inc.Feed(events)
+	fullJSON, _ := json.Marshal(full)
+	incJSON, _ := json.Marshal(inc.Finish(b, now, 90))
+	if string(fullJSON) != string(incJSON) {
+		t.Errorf("incremental stats differ from a full walk:\n%s\n%s", incJSON, fullJSON)
+	}
+}
