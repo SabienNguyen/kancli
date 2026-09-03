@@ -1680,19 +1680,26 @@ func (m App) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, s)
 	}
 	// Dialogs keep a one-line status strip at the bottom so messages and
-	// errors stay visible.
+	// errors stay visible. The strip takes a row away from the dialog, so
+	// the ones that fill the terminal are re-sized to what is left before
+	// they render; otherwise a status message pushes the view one line
+	// past the bottom of the screen.
+	var note string
+	switch {
+	case m.err != nil:
+		note = m.st.err.Render(m.err.Error())
+	case m.statusMsg != "":
+		note = m.st.success.Render(m.statusMsg)
+	}
+	bodyHeight := m.height
+	if note != "" {
+		bodyHeight--
+	}
 	dialog := func(s string) string {
-		var note string
-		switch {
-		case m.err != nil:
-			note = m.st.err.Render(m.err.Error())
-		case m.statusMsg != "":
-			note = m.st.success.Render(m.statusMsg)
-		}
 		if note == "" {
 			return center(s)
 		}
-		body := lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, s)
+		body := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Center, s)
 		return lipgloss.JoinVertical(lipgloss.Left, body, lipgloss.NewStyle().MaxWidth(m.width).Render(" "+note))
 	}
 	switch m.state {
@@ -1705,8 +1712,10 @@ func (m App) View() string {
 	case stateConfirm:
 		return dialog(m.confirm.View())
 	case stateDetail:
+		m.detail.setSize(m.width, bodyHeight)
 		return dialog(m.detail.view())
 	case stateStats:
+		m.stats.setSize(m.width, bodyHeight)
 		return dialog(m.stats.view())
 	case statePicker:
 		return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.pick.view())

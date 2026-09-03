@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -26,6 +27,10 @@ func TestGolden(t *testing.T) {
 		keys  []string
 		text  string
 		after []string
+		// want is a string the final screen must contain. Cases whose
+		// last key starts an asynchronous command wait for it so the
+		// screen has settled before the program is told to quit.
+		want string
 	}{
 		{name: "board"},
 		{name: "board-compact", cfg: config.Config{Compact: true}},
@@ -35,7 +40,7 @@ func TestGolden(t *testing.T) {
 		{name: "search", keys: []string{"/"}, text: "p:high", after: []string{"enter"}},
 		{name: "marks", keys: []string{" ", "j", " "}},
 		{name: "detail", keys: []string{"enter"}},
-		{name: "detail-links", keys: []string{"enter", "l"}, text: "blocked-by #2", after: []string{"enter"}},
+		{name: "detail-links", keys: []string{"enter", "l"}, text: "blocked-by #2", after: []string{"enter"}, want: "Linked"},
 		{name: "form", keys: []string{"n"}, text: "Write golden tests"},
 		{name: "edit", keys: []string{"e"}},
 		{name: "column-form", keys: []string{"C"}},
@@ -63,6 +68,11 @@ func TestGolden(t *testing.T) {
 			for _, k := range c.after {
 				tm.Send(keyMsg(k))
 			}
+			if c.want != "" {
+				teatest.WaitFor(t, tm.Output(), func(b []byte) bool {
+					return bytes.Contains(b, []byte(c.want))
+				}, teatest.WithCheckInterval(time.Millisecond), teatest.WithDuration(5*time.Second))
+			}
 			tm.Send(tea.QuitMsg{})
 			fm := tm.FinalModel(t, teatest.WithFinalTimeout(5*time.Second)).(App)
 			assertFits(t, fm, c.name)
@@ -81,6 +91,13 @@ func goldenApp(t *testing.T, w, h int, theme string, ascii bool, cfg config.Conf
 	prevNow := board.Now
 	board.Now = func() time.Time { return fixed }
 	t.Cleanup(func() { board.Now = prevNow })
+
+	// Status messages must survive until the screen is captured: the
+	// package-wide test default expires them immediately, which would
+	// race the final render.
+	prevStatus := StatusDuration
+	StatusDuration = time.Hour
+	t.Cleanup(func() { StatusDuration = prevStatus })
 
 	if theme == "" {
 		theme = "default"
