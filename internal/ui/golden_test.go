@@ -48,6 +48,8 @@ func TestGolden(t *testing.T) {
 		{name: "confirm", keys: []string{"d"}},
 		{name: "archive", keys: []string{"z"}},
 		{name: "stats", keys: []string{"S"}},
+		{name: "goals-board", keys: []string{"b", "j", "enter"}},
+		{name: "goals-detail", keys: []string{"b", "j", "enter", "enter"}},
 		{name: "moved", keys: []string{"L"}},
 		{name: "sorted", keys: []string{"s", "s"}},
 	}

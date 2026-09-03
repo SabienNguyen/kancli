@@ -1,18 +1,18 @@
- Kancli · Demo                                                                  In Progress is over its WIP limit (3/2) 
+ Kancli · Roadmap · goals                                                                        Opened board "Roadmap" 
 ╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
-│    To Do 3                           ││    In Progress 3/2                   ││    Done 2                            │
+│    To Do 1                           ││    In Progress 1                     ││    Done 0                            │
 │                                      ││                                      ││                                      │
-│ │ #2 • Fix the flaky terminal resiz… ││   #5 ‼ Ship the CLI subcommands      ││ │ #7 Upgrade to Bubble Tea v1        │
-│ │                                    ││   add, list, move, done, export and… ││ │                                    │
-│ │ 2d overdue · +bug · +tests         ││   today · @sam · +feature · ↳ roadm… ││ │ +chore                             │
+│ │ #1 ↑ Ship 1.0                      ││ │ #2 • Grow the docs                 ││   No goals.                          │
+│ │ Cut the first stable release.      ││ │ Cover every command and key.       ││                                      │
+│ │ Sep 24 · @sam · +release · ↳ 1/2   ││ │ +docs · ↳ 0/1                      ││                                      │
 │                                      ││                                      ││                                      │
-│   #3 Buy milk                        ││   #6 • Review the mouse support PR   ││   #8 ↓ Stay cool                     │
-│   strawberry milk                    ││                                      ││   as a cucumber                      │
-│   +home                              ││   in 3d · @alex · +review            ││   ↳ roadmap#1                        │
 │                                      ││                                      ││                                      │
-│   #4 ↓ Plan the team offsite         ││ │ #1 ↑ Write the release notes       ││                                      │
-│   Venue, agenda and travel.          ││ │ Cover the new search syntax, undo… ││                                      │
-│   Sep 14 · @alex · +planning · ↳ ro… ││ │ tomorrow · @sam · +docs · ☑ 1/3 ·… ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
+│                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
@@ -33,4 +33,4 @@
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯╰──────────────────────────────────────╯
- n new task • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit                             
+ n new goal • enter/v view • e edit • L/⇧→ move right • / search • u undo • ? help • q quit                             

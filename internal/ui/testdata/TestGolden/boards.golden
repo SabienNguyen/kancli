@@ -1,36 +1,36 @@
  Kancli · Demo                                              1 overdue · 1 due today · demo mode · changes are not saved 
-╭───────────────────────────────────────────────────────────────────────────╮                                           
-│    Boards                                                                 │                                           
-│                                                                           │                                           
-│   1 board                                                                 │                                           
-│                                                                           │                                           
-│ │ Demo                                                                    │                                           
-│ │ 8 tasks, 3 columns (current) · Sample board with three weeks of history │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│                                                                           │                                           
-│ enter open • n new board • r rename • e describe • d delete • esc back    │                                           
-╰───────────────────────────────────────────────────────────────────────────╯                                           
+╭─────────────────────────────────────────────────────────────────────────────────────────╮                             
+│    Boards                                                                               │                             
+│                                                                                         │                             
+│   2 boards                                                                              │                             
+│                                                                                         │                             
+│ │ Demo                                                                                  │                             
+│ │ 8 tasks, 3 columns (current) · Sample board with three weeks of history               │                             
+│                                                                                         │                             
+│   Roadmap                                                                               │                             
+│   goals · 2 tasks, 3 columns · Quarter goals                                            │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│                                                                                         │                             
+│ enter open • n new board • r rename • e describe • k toggle goals • d delete • esc back │                             
+╰─────────────────────────────────────────────────────────────────────────────────────────╯                             

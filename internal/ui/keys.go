@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SabienNguyen/kancli/internal/board"
+
 	"github.com/charmbracelet/bubbles/key"
 )
 
@@ -34,6 +36,17 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.AddColumn, k.EditColumn, k.DeleteColumn, k.ColLeft, k.ColRight, k.Save},
 		{k.Help, k.Quit},
 	}
+}
+
+// forBoard returns a copy of the map whose help text speaks of the board's
+// own noun: "new goal" on a goal board, "new task" everywhere else. The
+// bindings themselves never change.
+func (k KeyMap) forBoard(b *board.Board) KeyMap {
+	if b == nil || !b.IsGoals() {
+		return k
+	}
+	k.New = key.NewBinding(key.WithKeys(k.New.Keys()...), key.WithHelp(k.New.Help().Key, "new "+b.Noun()))
+	return k
 }
 
 func bind(help, desc string, keys ...string) key.Binding {
@@ -213,15 +226,15 @@ var confirmKeys = confirmKeyMap{
 
 // pickerKeyMap holds the board picker / archive list bindings.
 type pickerKeyMap struct {
-	Select, New, Rename, Describe, Delete, Restore, Back key.Binding
+	Select, New, Rename, Describe, Kind, Delete, Restore, Back key.Binding
 }
 
 func (k pickerKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Select, k.New, k.Rename, k.Describe, k.Delete, k.Back}
+	return []key.Binding{k.Select, k.New, k.Rename, k.Describe, k.Kind, k.Delete, k.Back}
 }
 
 func (k pickerKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Select, k.New, k.Rename, k.Describe}, {k.Delete, k.Restore, k.Back}}
+	return [][]key.Binding{{k.Select, k.New, k.Rename, k.Describe}, {k.Kind, k.Delete, k.Restore, k.Back}}
 }
 
 var pickerKeys = pickerKeyMap{
@@ -229,6 +242,7 @@ var pickerKeys = pickerKeyMap{
 	New:      bind("n", "new board", "n"),
 	Rename:   bind("r", "rename", "r"),
 	Describe: bind("e", "describe", "e"),
+	Kind:     bind("k", "toggle goals", "k"),
 	Delete:   bind("d", "delete", "d"),
 	Restore:  bind("enter", "restore", "enter"),
 	Back:     bind("esc", "back", "esc", "q"),

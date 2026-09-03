@@ -188,15 +188,24 @@ func (d *detailView) render(t board.Task, b *board.Board, now time.Time) {
 		out = append(out, st.muted.Render("  none · press l to link (blocks, blocked-by, subtask-of, parent-of, relates)"))
 	}
 	for i, r := range d.links {
-		where := board.ColName(b, r.Task.Column)
+		// A foreign end is named "roadmap#1" and its column comes from its
+		// own board, which Resolve hands back.
+		ob, ref := b, board.Ref{ID: r.Task.ID}
+		if r.Board != "" {
+			ref.Board = r.Board
+			if other, _ := b.Resolve(board.Link{Kind: r.Kind, Task: r.Task.ID, Board: r.Board}); other != nil {
+				ob = other
+			}
+		}
+		where := board.ColName(ob, r.Task.Column)
 		if r.Task.Archived() {
 			where = "archived"
 		}
 		label := st.muted.Render(r.Label)
-		if r.Label == "blocked by" && !r.Task.Archived() && !isDone(b, r.Task) {
+		if r.Label == "blocked by" && !r.Task.Archived() && !isDone(ob, r.Task) {
 			label = st.err.Render(r.Label)
 		}
-		line := fmt.Sprintf("  %s %s %s %s", label, st.muted.Render(r.Task.Ref()), r.Task.Title, st.muted.Render("("+where+")"))
+		line := fmt.Sprintf("  %s %s %s %s", label, st.muted.Render(ref.String()), r.Task.Title, st.muted.Render("("+where+")"))
 		if len(t.Checklist)+len(t.Attachments)+i == d.cursor {
 			line = st.strong.Render("› ") + strings.TrimPrefix(line, "  ")
 		}
