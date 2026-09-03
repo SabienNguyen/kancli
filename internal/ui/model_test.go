@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -485,13 +484,17 @@ func TestExternalChangesAreMerged(t *testing.T) {
 		t.Error("the other process should replay the local move")
 	}
 
-	// ctrl+s writes a snapshot and archives the tail.
+	// ctrl+s folds the tail into a snapshot and keeps the history.
 	m = press(m, "ctrl+s")
 	if m.err != nil || st.TailEvents() != 0 {
 		t.Errorf("compact: err=%v tail=%d", m.err, st.TailEvents())
 	}
-	if segs, _ := filepath.Glob(filepath.Join(st.ArchiveDir(), "*.jsonl")); len(segs) == 0 {
-		t.Error("compaction should archive the tail log")
+	events, err := st.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Error("compaction should keep the event history")
 	}
 	f, _ = store.New(st.Path()).Load()
 	if f.Active().Task(1).Column != "in_progress" || f.Active().Task(10) == nil {

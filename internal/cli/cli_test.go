@@ -312,7 +312,7 @@ func TestCLIStatsLogReviewCompactAsOf(t *testing.T) {
 	}
 
 	out, _, code = runCLI(t, path, "compact")
-	if code != 0 || !strings.Contains(out, "Snapshot written") {
+	if code != 0 || !strings.Contains(out, "Snapshot written") || !strings.Contains(out, "folded") {
 		t.Errorf("compact: %q", out)
 	}
 	st2 := store.New(path)

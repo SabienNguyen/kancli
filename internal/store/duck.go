@@ -40,10 +40,28 @@ func SQLLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// EventFiles listed the file store's log files. It is a stub so the CLI
-// still compiles; it and its callers go away with the DuckDB rework
-// (Task 4), which exports the events from the database instead.
-func (s *Store) EventFiles() []string { return nil }
+// WriteEventsFile exports the event log to a temporary JSONL file so
+// DuckDB can read it, and returns the path and a cleanup function. The
+// path is empty with a no-op cleanup when the store has nothing to export.
+func WriteEventsFile(s *Store) (string, func(), error) {
+	if !s.Enabled() {
+		return "", func() {}, nil
+	}
+	tmp, err := os.CreateTemp("", "kancli-events-*.jsonl")
+	if err != nil {
+		return "", nil, err
+	}
+	name := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	if err := s.ExportEventsJSONL(name); err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	return name, func() { os.Remove(name) }, nil
+}
 
 // sqlViews returns SQL that defines the boards, columns, tasks, events and
 // derived views over the given state file and event log files. doneColumns

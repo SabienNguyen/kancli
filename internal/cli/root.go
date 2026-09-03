@@ -22,6 +22,13 @@ func Main(version string, args []string, stdout, stderr io.Writer, launch func(*
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	err := root.Execute()
+	if c.env != nil {
+		// Closing checkpoints the write-ahead log, so a clean exit leaves
+		// board.db alone on disk.
+		if cerr := c.env.Store.Close(); cerr != nil && err == nil {
+			fmt.Fprintf(stderr, "kancli: %v\n", cerr)
+		}
+	}
 	switch {
 	case err == nil:
 		return 0

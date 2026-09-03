@@ -78,17 +78,6 @@ func New(path string) *Store {
 // Path is the database file. It is empty for in-memory stores.
 func (s *Store) Path() string { return s.path }
 
-// LogPath, ArchiveDir and SnapDir named the file store's siblings. They are
-// stubs so the CLI and the UI still compile; the callers, and these
-// methods, go away with the DuckDB rework (Task 4).
-func (s *Store) LogPath() string { return "" }
-
-// ArchiveDir is a stub; see LogPath.
-func (s *Store) ArchiveDir() string { return "" }
-
-// SnapDir is a stub; see LogPath.
-func (s *Store) SnapDir() string { return "" }
-
 // SetActor names the process in the events this store writes.
 func (s *Store) SetActor(actor string) { s.actor = actor }
 
@@ -129,14 +118,25 @@ func DefaultPath() (string, error) {
 	return filepath.Join(base, "kancli", "board.db"), nil
 }
 
-// Close releases the database. It is safe to call more than once.
+// Close checkpoints the write-ahead log and releases the database, so a
+// clean exit leaves board.db alone on disk and copying it is a valid
+// backup. It is safe to call more than once.
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	db := s.db
 	s.db, s.openErr = nil, nil
-	return db.Close()
+	var errs []error
+	if s.path != "" {
+		if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			errs = append(errs, fmt.Errorf("checkpoint %s: %w", s.path, err))
+		}
+	}
+	if err := db.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // --- loading ----------------------------------------------------------------

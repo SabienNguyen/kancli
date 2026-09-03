@@ -599,10 +599,14 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m App) quit() (tea.Model, tea.Cmd) {
 	m.quitting = true
 	if !m.readOnly && m.store.Enabled() && m.store.TailEvents() > 0 {
-		// Fold the tail into a fresh snapshot so board.json is current.
+		// Fold the tail into a fresh snapshot so the stored state is current.
 		if _, err := m.writeSnapshot(); err != nil {
 			m.err = err
 		}
+	}
+	// Closing checkpoints the write-ahead log, so board.db stands alone.
+	if err := m.store.Close(); err != nil && m.err == nil {
+		m.err = err
 	}
 	return m, tea.Quit
 }

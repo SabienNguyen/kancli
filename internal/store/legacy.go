@@ -12,33 +12,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"time"
 
 	"github.com/SabienNguyen/kancli/internal/board"
 )
 
 // maxEventLine bounds one event line; undo events carry a whole board.
 const maxEventLine = 32 << 20
-
-// snapshotSeq reads only the last_seq of a snapshot file. The importer
-// (next change) needs it to number the snapshots it brings over.
-//
-//nolint:unused // used by the importer that follows
-func snapshotSeq(path string) (int64, time.Time) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, time.Time{}
-	}
-	var probe struct {
-		LastSeq int64 `json:"last_seq"`
-	}
-	_ = json.Unmarshal(data, &probe)
-	mod := time.Time{}
-	if info, err := os.Stat(path); err == nil {
-		mod = info.ModTime()
-	}
-	return probe.LastSeq, mod
-}
 
 // readEventFile parses a JSONL file. A torn last line (from a crash mid
 // write) is dropped; any other damage is an error. Line lengths are counted

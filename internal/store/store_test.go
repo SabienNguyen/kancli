@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -216,8 +217,28 @@ func TestStoreBootstrapsHistoryForOldFiles(t *testing.T) {
 }
 
 func TestSQLViews(t *testing.T) {
-	sql := SQLViews("/tmp/state.json", []string{"/data/board.events/000000000001-000000000010.jsonl", "/data/board.events.jsonl"}, map[string]string{"main": "done", "work": "shipped"})
-	for _, want := range []string{"CREATE OR REPLACE VIEW tasks", "read_json_auto('/tmp/state.json')", "'/data/board.events.jsonl'", "format = 'newline_delimited'", "VIEW cycle_times", "VIEW column_stays", "('main', 'done'), ('work', 'shipped')", "JOIN done_columns dc"} {
+	st := New(filepath.Join(t.TempDir(), "board.db"))
+	defer st.Close()
+	f, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Active().AddTask(board.Task{Title: "sql"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	events, cleanup, err := WriteEventsFile(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if data, err := os.ReadFile(events); err != nil || !strings.Contains(string(data), `"kind":"task.created"`) {
+		t.Fatalf("exported events = %q, %v", data, err)
+	}
+	sql := SQLViews("/tmp/state.json", []string{events}, map[string]string{"main": "done", "work": "shipped"})
+	for _, want := range []string{"CREATE OR REPLACE VIEW tasks", "read_json_auto('/tmp/state.json')", SQLLiteral(events), "format = 'newline_delimited'", "VIEW cycle_times", "VIEW column_stays", "('main', 'done'), ('work', 'shipped')", "JOIN done_columns dc"} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("views missing %q", want)
 		}
@@ -816,4 +837,39 @@ func sumDone(ws []board.WeekCount) int {
 		n += w.Done
 	}
 	return n
+}
+
+// TestCloseCheckpointsTheLog covers the promise that copying board.db is a
+// valid backup: a clean exit leaves no write-ahead log beside it.
+func TestCloseCheckpointsTheLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.db")
+	st := New(path)
+	f, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Active().AddTask(board.Task{Title: "durable"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if exists(path + suffix) {
+			t.Errorf("%s should be gone after Close", filepath.Base(path)+suffix)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Errorf("Close should be idempotent: %v", err)
+	}
+	again, err := New(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Active().Tasks) != 1 || again.Active().Tasks[0].Title != "durable" {
+		t.Errorf("reopened board = %+v", again.Active().Tasks)
+	}
 }
