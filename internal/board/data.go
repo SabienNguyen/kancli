@@ -319,7 +319,10 @@ func (f *File) DescribeBoard(id, text string) error {
 	if b == nil {
 		return fmt.Errorf("no board %q", id)
 	}
-	text = strings.TrimSpace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	if text == b.Description {
+		return nil
+	}
 	b.Description = text
 	f.emit(Event{Kind: EvBoardDescribed, Board: b.ID, Text: text})
 	return nil

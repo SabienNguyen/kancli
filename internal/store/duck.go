@@ -72,7 +72,7 @@ func SQLViews(stateFile string, eventFiles []string, DoneColumns map[string]stri
 		rows = append(rows, "(NULL::VARCHAR, NULL::VARCHAR)")
 	}
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW done_columns AS SELECT * FROM (VALUES %s) t(board, id)%s;\n", strings.Join(rows, ", "), map[bool]string{true: " WHERE board IS NOT NULL", false: ""}[len(DoneColumns) == 0])
-	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW boards AS SELECT b.id, b.name, len(b.tasks) AS tasks FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", SQLLiteral(stateFile))
+	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW boards AS SELECT b.id, b.name, b.description, len(b.tasks) AS tasks FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", SQLLiteral(stateFile))
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW columns AS SELECT b.id AS board, unnest(b.columns, recursive := true) FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", SQLLiteral(stateFile))
 	fmt.Fprintf(&sb, "CREATE OR REPLACE VIEW tasks AS SELECT b.id AS board, unnest(b.tasks, recursive := true) FROM (SELECT unnest(boards) AS b FROM read_json_auto(%s));\n", SQLLiteral(stateFile))
 	if len(eventFiles) == 0 {

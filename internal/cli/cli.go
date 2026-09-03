@@ -1135,7 +1135,7 @@ func (c *cli) boardsDescribe(key, text string) error {
 	f := c.env.File
 	b := f.Board(key)
 	if b == nil {
-		return fmt.Errorf("no board %q (see `kancli boards`)", key)
+		return fmt.Errorf("no board %q", key)
 	}
 	if err := f.DescribeBoard(b.ID, text); err != nil {
 		return err

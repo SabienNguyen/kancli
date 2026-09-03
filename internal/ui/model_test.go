@@ -738,3 +738,28 @@ func TestLinksInDetailAndCards(t *testing.T) {
 		t.Error("cards should show subtask progress and parent")
 	}
 }
+
+// Describing the active board must be undoable: without a snapshot a later
+// undo would silently restore the old description and persist it.
+func TestDescribeBoardUndo(t *testing.T) {
+	m, _ := newTestApp(t)
+	old := m.board.Description
+	if old == "" {
+		t.Fatal("sample board should have a description")
+	}
+	m = press(m, "b", "e")
+	m = typeText(m, " and more")
+	m = press(m, "enter")
+	want := old + " and more"
+	if m.board.Description != want {
+		t.Fatalf("after describe = %q, want %q", m.board.Description, want)
+	}
+	m = press(m, "esc", "u")
+	if m.board.Description != old {
+		t.Errorf("after undo = %q, want %q", m.board.Description, old)
+	}
+	m = press(m, "U")
+	if m.board.Description != want {
+		t.Errorf("after redo = %q, want %q", m.board.Description, want)
+	}
+}

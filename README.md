@@ -499,7 +499,7 @@ An event line looks like this:
 Kinds: `task.created|updated|moved|reordered|deleted|archived|restored`,
 `comment.added`, `checklist.added|toggled|removed`,
 `attachment.added|removed`, `column.added|updated|removed|moved`,
-`board.added|renamed|removed|activated|restored` (the last is an undo),
+`board.added|renamed|described|removed|activated|restored` (the last is an undo),
 `link.added|removed`.
 
 ## DuckDB

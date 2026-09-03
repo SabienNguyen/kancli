@@ -51,6 +51,9 @@ func newPrompt(kind promptKind, title, initial string, st Styles) prompt {
 	ti.Prompt = "› "
 	ti.PromptStyle = st.searchPrompt
 	ti.CharLimit = 500
+	if kind == promptDescribeBoard {
+		ti.CharLimit = 0 // descriptions may be long; never silently truncate
+	}
 	ti.Width = 60
 	ti.PlaceholderStyle = st.muted
 	ti.SetValue(initial)
@@ -225,11 +228,11 @@ func boardItems(f *board.File) []pickItem {
 	for _, b := range f.Boards {
 		live := len(b.Live())
 		desc := fmt.Sprintf("%d task%s, %d column%s", live, board.Plural(live), len(b.Columns), board.Plural(len(b.Columns)))
-		if b.Description != "" {
-			desc = b.Description + " · " + desc
-		}
 		if b.ID == f.ActiveBoard {
 			desc += " (current)"
+		}
+		if b.Description != "" {
+			desc += " · " + b.Description
 		}
 		items = append(items, pickItem{id: b.ID, title: b.Name, desc: desc})
 	}

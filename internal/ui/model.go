@@ -1258,14 +1258,28 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, nil
 		}
+		active := msg.sref == m.board.ID
+		if active {
+			m.snapshot()
+		}
 		if err := m.file.RenameBoard(msg.sref, text); err != nil {
+			if active {
+				m.dropSnapshot()
+			}
 			return m, m.setStatus("%v", err)
 		}
 		m.persist()
 		m.openBoardPicker(msg.sref)
 		return m, m.setStatus("Renamed board to %q", text)
 	case promptDescribeBoard:
+		active := msg.sref == m.board.ID
+		if active {
+			m.snapshot()
+		}
 		if err := m.file.DescribeBoard(msg.sref, text); err != nil {
+			if active {
+				m.dropSnapshot()
+			}
 			return m, m.setStatus("%v", err)
 		}
 		m.persist()
