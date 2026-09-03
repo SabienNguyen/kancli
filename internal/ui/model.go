@@ -908,6 +908,133 @@ func (m App) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, m.col().update(msg)
 }
 
+// linkTargetItems lists every live task a link could point at: this
+// board's first, then the other boards in file order, each row labelled
+// with the reference you would type for it.
+func (m App) linkTargetItems(from int) []pickItem {
+	var items []pickItem
+	add := func(b *board.Board) {
+		here := b.ID == m.board.ID
+		for _, t := range b.Live() {
+			if here && t.ID == from {
+				continue
+			}
+			ref := board.Ref{ID: t.ID}
+			if !here {
+				ref.Board = b.ID
+			}
+			col := t.Column
+			if c := b.Column(t.Column); c != nil {
+				col = c.Name
+			}
+			desc := ref.String() + " " + m.g.dot + " " + col
+			if b.IsBlocked(t.ID) {
+				desc += " " + m.g.dot + " blocked"
+			}
+			items = append(items, pickItem{
+				id:    ref.String(),
+				num:   t.ID,
+				title: t.Title,
+				desc:  desc,
+				// Number, board and title all narrow the search.
+				filter: ref.String() + " " + t.Title + " " + b.Name,
+			})
+		}
+	}
+	add(m.board)
+	for _, b := range m.file.Boards {
+		if b.ID != m.board.ID {
+			add(b)
+		}
+	}
+	return items
+}
+
+// openLinkPicker starts the first link step: a fuzzy search over every
+// task on every board, filtering from the first keystroke.
+func (m App) openLinkPicker(from int) (tea.Model, tea.Cmd) {
+	items := m.linkTargetItems(from)
+	if len(items) == 0 {
+		return m, m.setStatus("Nothing to link to")
+	}
+	m.pick = newPicker(pickerLinkTarget, fmt.Sprintf("Link #%d to…", from), items, m.st)
+	m.pick.from = from
+	m.pick.setSize(m.width, m.pickerHeight())
+	cmd := m.pick.startFilter()
+	m.state = statePicker
+	return m, cmd
+}
+
+// openLinkKindPicker is the second link step: how the two tasks relate.
+func (m App) openLinkKindPicker(from int, to board.Ref) (tea.Model, tea.Cmd) {
+	items := make([]pickItem, 0, len(linkKinds))
+	for _, k := range linkKinds {
+		items = append(items, pickItem{id: k.word, title: k.label, desc: k.desc})
+	}
+	m.pick = newPicker(pickerLinkKind, fmt.Sprintf("#%d %s %s", from, m.g.dot, to), items, m.st)
+	m.pick.from, m.pick.to = from, to
+	m.pick.setSize(m.width, m.pickerHeight())
+	m.state = statePicker
+	return m, nil
+}
+
+// chooseLinkTarget moves from the highlighted task to the relation step.
+func (m App) chooseLinkTarget() (tea.Model, tea.Cmd) {
+	it, ok := m.pick.selected()
+	if !ok {
+		return m, nil
+	}
+	to, err := board.ParseRef(it.id, m.board, m.file)
+	if err != nil {
+		return m, m.setStatus("%v", err)
+	}
+	return m.openLinkKindPicker(m.pick.from, to)
+}
+
+// closeLinkPicker abandons the link and goes back to the task view.
+func (m App) closeLinkPicker() (tea.Model, tea.Cmd) {
+	m.state = stateDetail
+	m.renderDetail()
+	return m, nil
+}
+
+// linkChosen stores the link the two steps described.
+func (m App) linkChosen(fromID int, word string, target board.Ref) (tea.Model, tea.Cmd) {
+	m.state = stateDetail
+	from, kind, to, err := linkRefs(fromID, word, target)
+	if err != nil {
+		m.renderDetail()
+		return m, m.setStatus("%v", err)
+	}
+	// A link is stored on its source task; when that is a task on another
+	// board, this board's snapshot cannot undo it.
+	elsewhere := m.linkBoard(from)
+	if elsewhere == nil {
+		m.snapshot()
+	}
+	if err := m.addLinkRef(from, kind, to); err != nil {
+		if elsewhere == nil {
+			m.dropSnapshot()
+		}
+		m.renderDetail()
+		return m, m.setStatus("%v", err)
+	}
+	m.renderDetail()
+	// linkRefs normalises the inverse kinds, so "blocked by" #2 chosen on
+	// task 1 is stored as 2 blocks 1. Name whichever endpoint is not the
+	// task the picker was opened on, never ref twice.
+	outgoing := from.Board == "" && from.ID == fromID
+	other := to
+	if !outgoing {
+		other = from
+	}
+	if elsewhere != nil {
+		return m, m.changed("Linked #%d %s %s (on %s, not undoable here)",
+			fromID, linkWord(kind, outgoing), other, boardName(elsewhere))
+	}
+	return m, m.changed("Linked #%d %s %s", fromID, linkWord(kind, outgoing), other)
+}
+
 // openBoardPicker shows the board list with the given board selected.
 func (m *App) openBoardPicker(selectID string) {
 	m.pick = newPicker(pickerBoards, "Boards", boardItems(m.file), m.st)
@@ -1066,21 +1193,22 @@ func (m *App) doneWarning(ids []int, target *board.Column) string {
 	return ""
 }
 
-// parseLinkInput reads "blocks 15" style text typed in the link prompt. The
-// target may name another board ("blocked-by work#2"). It returns the two
-// ends of the stored link, which the inverse words swap: "blocked-by
-// work#2" typed on #5 is stored as work#2 blocks #5.
-func parseLinkInput(from int, text string, cur *board.Board, f *board.File) (board.Ref, board.LinkKind, board.Ref, error) {
-	fields := strings.Fields(strings.TrimSpace(text))
-	if len(fields) < 2 {
-		return board.Ref{}, "", board.Ref{}, fmt.Errorf("type a kind and a task number, e.g. blocks 15")
-	}
-	target, err := board.ParseRef(fields[len(fields)-1], cur, f)
-	if err != nil {
-		return board.Ref{}, "", board.Ref{}, err
-	}
+// linkKinds are the relations the second link step offers, named with the
+// words ParseLinkSpec understands.
+var linkKinds = []struct{ word, label, desc string }{
+	{"blocked-by", "blocked by", "this task waits for it"},
+	{"blocks", "blocks", "it waits for this task"},
+	{"subtask-of", "subtask of", "this task is part of it"},
+	{"parent-of", "parent of", "it is part of this task"},
+	{"relates", "relates to", "related, in no particular order"},
+}
+
+// linkRefs turns a picked relation and target into the two ends of the
+// stored link, which the inverse words swap: "blocked by" roadmap#1 chosen
+// on #5 is stored as roadmap#1 blocks #5.
+func linkRefs(from int, word string, target board.Ref) (board.Ref, board.LinkKind, board.Ref, error) {
 	// The two sentinels only report which way ParseLinkSpec turns the words.
-	src, kind, _, err := board.ParseLinkSpec(1, strings.Join(fields[:len(fields)-1], " "), 2)
+	src, kind, _, err := board.ParseLinkSpec(1, word, 2)
 	if err != nil {
 		return board.Ref{}, "", board.Ref{}, err
 	}
@@ -1384,43 +1512,6 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		}
 		m.renderDetail()
 		return m, m.changed("Checklist item added")
-	case promptLink:
-		if text == "" {
-			m.renderDetail()
-			return m, nil
-		}
-		from, kind, to, err := parseLinkInput(msg.ref, text, m.board, m.file)
-		if err != nil {
-			m.renderDetail()
-			return m, m.setStatus("%v", err)
-		}
-		// A link is stored on its source task; when that is a task on
-		// another board, this board's snapshot cannot undo it.
-		elsewhere := m.linkBoard(from)
-		if elsewhere == nil {
-			m.snapshot()
-		}
-		if err := m.addLinkRef(from, kind, to); err != nil {
-			if elsewhere == nil {
-				m.dropSnapshot()
-			}
-			m.renderDetail()
-			return m, m.setStatus("%v", err)
-		}
-		m.renderDetail()
-		// parseLinkInput normalises the inverse kinds, so "blocked-by #2"
-		// typed on task 1 is stored as 2 blocks 1. Name whichever endpoint
-		// is not the task the prompt was opened on, never ref twice.
-		outgoing := from.Board == "" && from.ID == msg.ref
-		other := to
-		if !outgoing {
-			other = from
-		}
-		if elsewhere != nil {
-			return m, m.changed("Linked #%d %s %s (on %s, not undoable here)",
-				msg.ref, linkWord(kind, outgoing), other, boardName(elsewhere))
-		}
-		return m, m.changed("Linked #%d %s %s", msg.ref, linkWord(kind, outgoing), other)
 	case promptAttachment:
 		if text == "" {
 			m.renderDetail()
@@ -1528,7 +1619,7 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renderDetail()
 		return m, m.changed("Removed item")
 	case key.Matches(msg, k.Link):
-		return m.openPrompt(promptLink, "Link "+t.Ref()+" (e.g. blocks 15, blocked-by 15, subtask-of 3, parent-of 7, relates 9)", "", id, "", stateDetail)
+		return m.openLinkPicker(id)
 	case key.Matches(msg, k.Go):
 		r, ok := m.detail.linkAt(*t)
 		if !ok {
@@ -1624,25 +1715,56 @@ func (m App) handleStatsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	k := m.pick.keys
 	if m.pick.filtering() {
+		switch {
+		// While filtering every other key belongs to the filter input, so
+		// only esc and enter are taken, and only on the link search.
+		case m.pick.kind == pickerLinkTarget && msg.Type == tea.KeyEsc:
+			return m.closeLinkPicker()
+		case m.pick.kind == pickerLinkTarget && key.Matches(msg, k.Choose) && len(m.pick.list.VisibleItems()) > 0:
+			// The list takes the first enter to accept the filter; hand it
+			// that one and choose the row it leaves highlighted, so typing
+			// and one enter is the whole flow.
+			var cmd tea.Cmd
+			m.pick, cmd = m.pick.update(msg)
+			mm, c := m.chooseLinkTarget()
+			return mm, tea.Batch(cmd, c)
+		}
 		var cmd tea.Cmd
 		m.pick, cmd = m.pick.update(msg)
 		return m, cmd
 	}
-	k := m.pick.keys
 	switch {
 	case msg.Type == tea.KeyCtrlC:
 		return m.quit()
 	case key.Matches(msg, k.Back):
+		switch m.pick.kind {
+		case pickerLinkTarget:
+			return m.closeLinkPicker()
+		case pickerLinkKind:
+			// Back to the search, which starts over with no filter.
+			return m.openLinkPicker(m.pick.from)
+		}
 		m.state = stateBoard
 		return m, nil
 	}
 	item, ok := m.pick.selected()
 	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Describe) || key.Matches(msg, k.Delete) ||
-		(m.pick.kind == pickerBoards && key.Matches(msg, k.Kind)) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
+		(m.pick.kind == pickerBoards && key.Matches(msg, k.Kind)) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore)) ||
+		(m.pick.kind.linking() && key.Matches(msg, k.Choose))) {
 		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
 	}
-	if m.pick.kind == pickerBoards {
+	switch m.pick.kind {
+	case pickerLinkTarget:
+		if key.Matches(msg, k.Choose) && ok {
+			return m.chooseLinkTarget()
+		}
+	case pickerLinkKind:
+		if key.Matches(msg, k.Choose) && ok {
+			return m.linkChosen(m.pick.from, item.id, m.pick.to)
+		}
+	case pickerBoards:
 		switch {
 		case key.Matches(msg, k.Select):
 			if !ok {
@@ -1708,7 +1830,7 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateConfirm
 			return m, nil
 		}
-	} else {
+	default:
 		switch {
 		case key.Matches(msg, k.Restore):
 			if !ok {
