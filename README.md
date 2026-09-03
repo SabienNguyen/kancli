@@ -3,11 +3,14 @@
 A personal kanban board for the terminal, with an event-sourced store and
 built-in analytics.
 
-This is my fork of [charmbracelet/kancli](https://github.com/charmbracelet/kancli),
-the demo repo from Charm's kanban tutorial. I took the tutorial skeleton and
-built it out into the tool I use day to day: priorities, due dates, labels,
-checklists, search, undo, multiple boards, a scriptable CLI, a complete
-history of every change, and stats that answer "how long do things take".
+This started as a fork of [charmbracelet/kancli](https://github.com/charmbracelet/kancli),
+the demo repo from Charm's kanban tutorial. It is now a standalone
+repository, detached from that fork network, and a tool I use personally
+every day. I took the tutorial skeleton and built it out: priorities, due
+dates, labels, checklists, search, undo, multiple boards, goal boards, a
+scriptable CLI, a complete history of every change, and stats that answer
+"how long do things take". Every feature in it exists because I have a
+genuine use for it; nothing is here for show.
 It is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Bubbles](https://github.com/charmbracelet/bubbles),
 [Lip Gloss](https://github.com/charmbracelet/lipgloss) and
@@ -677,8 +680,10 @@ Tea debug logs to `./debug.log`.
 
 ## Credits
 
-The original tutorial code is by [Charm](https://charm.sh); this fork
-keeps their MIT license. If you want the tutorial itself, start from
+The original tutorial code is by [Charm](https://charm.sh); this project
+began as a fork of it and keeps their MIT license, but it is no longer part
+of that fork network and has grown into its own thing. If you want the
+tutorial itself, start from
 [charmbracelet/kancli](https://github.com/charmbracelet/kancli).
 
 ## License
