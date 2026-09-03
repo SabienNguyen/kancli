@@ -60,6 +60,18 @@ func WriteEventsFile(s *Store) (string, func(), error) {
 		os.Remove(name)
 		return "", nil, err
 	}
+	// An empty export is no export: read_json_auto over a zero-byte file
+	// cannot bind seq, and SQLViews defines a typed empty events view when
+	// it is given no file at all.
+	info, err := os.Stat(name)
+	if err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	if info.Size() == 0 {
+		os.Remove(name)
+		return "", func() {}, nil
+	}
 	return name, func() { os.Remove(name) }, nil
 }
 

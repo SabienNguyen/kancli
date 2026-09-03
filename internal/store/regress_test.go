@@ -204,7 +204,11 @@ func TestLoadAsOfPicksBaseBySequence(t *testing.T) {
 	// As of the end of 2024 the first snapshot is the right base: it is the
 	// newest one at or before the last event of 2024.
 	asOf := time.Date(2024, 12, 31, 23, 59, 59, 0, time.Local)
-	_, seq, found, err := st.readSnapshot(asOf)
+	db, err := st.conn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, seq, found, err := st.readSnapshot(db, asOf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +225,7 @@ func TestLoadAsOfPicksBaseBySequence(t *testing.T) {
 
 	// Before any event at all, the empty base at sequence zero answers.
 	before := time.Date(2020, 1, 1, 0, 0, 0, 0, time.Local)
-	_, seq, found, err = st.readSnapshot(before)
+	_, seq, found, err = st.readSnapshot(db, before)
 	if err != nil {
 		t.Fatal(err)
 	}

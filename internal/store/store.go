@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -156,43 +157,86 @@ func (s *Store) Close() error {
 // Load reads the newest snapshot, replays the events after it and returns
 // the live state.
 func (s *Store) Load() (*board.File, error) {
-	f, snapSeq, found, err := s.readSnapshot(time.Time{})
+	base, err := s.readBaseline()
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	f := base.file
+	if !base.found {
 		f = board.NewFile()
 	}
 	f.SetActor(s.actor)
-
-	events, err := s.readEvents(snapSeq, time.Time{})
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Replay(events); err != nil {
+	if err := f.Replay(base.events); err != nil {
 		return nil, replayError(s.describePath(), err)
 	}
-	maxSeq, err := s.maxEventSeq()
-	if err != nil {
-		return nil, err
-	}
-	s.seen = max64(max64(f.LastSeq, snapSeq), maxSeq)
+	s.seen = max64(max64(f.LastSeq, base.snapSeq), base.maxSeq)
 	s.nextSeq = s.seen + 1
-	s.tailCount = len(events)
+	s.tailCount = len(base.events)
 	s.needReload = false
-	if s.dataVer, err = s.dataVersion(); err != nil {
-		return nil, err
-	}
+	s.dataVer = base.dataVer
+	s.walkers = nil // a reload starts a new history; every walker is stale
 
 	// A board that predates the event log (one the importer just brought
 	// over) gets a history seeded from its task timestamps so "as of" views
 	// and stats have something to work on.
-	if found && len(events) == 0 && f.LastSeq == 0 && f.SnapshotAt.IsZero() && hasTasks(f) {
+	if base.found && len(base.events) == 0 && f.LastSeq == 0 && f.SnapshotAt.IsZero() && hasTasks(f) {
 		if err := s.bootstrap(f); err != nil {
 			return nil, err
 		}
 	}
 	return f, nil
+}
+
+// baseline is everything a load needs from the database, all of it read at
+// one point in the history.
+type baseline struct {
+	file    *board.File
+	found   bool
+	snapSeq int64
+	events  []board.Event
+	maxSeq  int64
+	dataVer int64
+}
+
+// readBaseline takes the snapshot, the events after it, the highest
+// sequence number and the change counter in one read transaction.
+//
+// Reading them in separate statements let a foreign commit land in the
+// middle: its events were counted into seen and into the change counter
+// without ever being replayed, and the next compaction folded a snapshot
+// that did not contain them, losing them for good.
+func (s *Store) readBaseline() (baseline, error) {
+	db, err := s.conn()
+	if err != nil {
+		return baseline{}, err
+	}
+	// A deferred (read) transaction: the store's DSN begins immediate,
+	// which would take the write lock for a read.
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return baseline{}, err
+	}
+	base, err := s.scanBaseline(tx)
+	if err != nil {
+		return baseline{}, errors.Join(err, tx.Rollback())
+	}
+	return base, tx.Rollback()
+}
+
+func (s *Store) scanBaseline(tx *sql.Tx) (baseline, error) {
+	var base baseline
+	var err error
+	if base.file, base.snapSeq, base.found, err = s.readSnapshot(tx, time.Time{}); err != nil {
+		return baseline{}, err
+	}
+	if base.events, err = s.readEvents(tx, base.snapSeq, time.Time{}); err != nil {
+		return baseline{}, err
+	}
+	if base.maxSeq, err = maxEventSeqOf(tx); err != nil {
+		return baseline{}, err
+	}
+	base.dataVer, err = dataVersionOf(tx)
+	return base, err
 }
 
 // describePath names the database in error messages.
@@ -279,11 +323,15 @@ func (s *Store) bootstrap(f *board.File) error {
 // for imported or bulk-written history has nothing to do with the period
 // it holds; it is kept only for the retention buckets.
 func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
-	cut, err := s.cutSeq(t)
+	db, err := s.conn()
 	if err != nil {
 		return nil, err
 	}
-	base, snapSeq, found, err := s.readSnapshotAt(cut)
+	cut, err := s.cutSeq(db, t)
+	if err != nil {
+		return nil, err
+	}
+	base, snapSeq, found, err := s.readSnapshotAt(db, cut)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +345,7 @@ func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
 		}
 		return nil, fmt.Errorf("no snapshot from before %s", t.Format(board.DateLayout))
 	}
-	events, err := s.readEventsThrough(snapSeq, cut, t)
+	events, err := s.readEventsThrough(db, snapSeq, cut, t)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +375,11 @@ func replayError(path string, err error) error {
 
 // Events returns the complete history in sequence order.
 func (s *Store) Events() ([]board.Event, error) {
-	return s.readEvents(0, time.Time{})
+	db, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	return s.readEvents(db, 0, time.Time{})
 }
 
 // ExportEventsJSONL writes every event to path, one JSON object per line,
@@ -358,12 +410,23 @@ func (s *Store) BoardStats(b *board.Board, now time.Time, days int) (board.Stats
 	if s.walkers == nil {
 		s.walkers = map[string]*board.StatsWalker{}
 	}
+	db, err := s.conn()
+	if err != nil {
+		return board.Stats{}, err
+	}
+	maxSeq, err := maxEventSeqOf(db)
+	if err != nil {
+		return board.Stats{}, err
+	}
 	w := s.walkers[b.ID]
-	if w == nil || !w.Compatible(b) {
+	// A walker whose sequence has run past the log is folding a history
+	// the database no longer has (the log was replaced by a shorter one);
+	// it would never see another event, so it is walked again from empty.
+	if w == nil || !w.Compatible(b) || w.Seq() > maxSeq {
 		w = board.NewStatsWalker(b)
 		s.walkers[b.ID] = w
 	}
-	events, err := s.readEvents(w.Seq(), time.Time{})
+	events, err := s.readEvents(db, w.Seq(), time.Time{})
 	if err != nil {
 		return board.Stats{}, err
 	}
@@ -402,26 +465,48 @@ func (s *Store) append(f *board.File, events []board.Event) error {
 	return err
 }
 
-func (s *Store) mergeAndInsert(tx *sql.Tx, f *board.File, events []board.Event) error {
-	var ver int64
-	if err := tx.QueryRow(`PRAGMA data_version`).Scan(&ver); err != nil {
-		return err
+// foreignWrites reports whether the database holds work this store has not
+// taken in: either another connection has committed since our last read
+// (the change counter moved), or the log runs past the newest sequence we
+// have replayed. The second test is not redundant. The change counter is
+// only ever sampled next to the reads it describes, so a commit that lands
+// between two of them is absorbed into the baseline unnoticed; the
+// sequence number of the newest event catches exactly that case.
+func (s *Store) foreignWrites(tx *sql.Tx) (bool, error) {
+	ver, err := dataVersionOf(tx)
+	if err != nil {
+		return false, err
 	}
 	if ver != s.dataVer {
+		return true, nil
+	}
+	maxSeq, err := maxEventSeqOf(tx)
+	if err != nil {
+		return false, err
+	}
+	return maxSeq > s.seen, nil
+}
+
+func (s *Store) mergeAndInsert(tx *sql.Tx, f *board.File, events []board.Event) error {
+	foreign, err := s.foreignWrites(tx)
+	if err != nil {
+		return err
+	}
+	if foreign {
 		s.needReload = true
 		rows, err := tx.Query(`SELECT `+eventColumns+` FROM events WHERE seq > ? ORDER BY seq`, s.seen)
 		if err != nil {
 			return err
 		}
-		foreign, err := scanEvents(rows)
+		missed, err := scanEvents(rows)
 		if err != nil {
 			return err
 		}
-		if err := f.Replay(foreign); err != nil {
+		if err := f.Replay(missed); err != nil {
 			return replayError(s.describePath(), err)
 		}
 		f.Pending() // replay is silent, but never leak events back into the log
-		if last := lastSeq(foreign); last >= s.nextSeq {
+		if last := lastSeq(missed); last >= s.nextSeq {
 			s.nextSeq = last + 1
 			s.seen = last
 		}
@@ -486,15 +571,15 @@ func (s *Store) Compact(f *board.File) error {
 }
 
 func (s *Store) writeSnapshot(tx *sql.Tx, f *board.File) error {
-	var ver int64
-	if err := tx.QueryRow(`PRAGMA data_version`).Scan(&ver); err != nil {
+	foreign, err := s.foreignWrites(tx)
+	if err != nil {
 		return err
 	}
-	if ver != s.dataVer {
+	if foreign {
 		s.needReload = true
 		return ErrStale
 	}
-	rows, err := snapshotRowsTx(tx)
+	rows, err := snapshotRowsOf(tx)
 	if err != nil {
 		return err
 	}
@@ -513,7 +598,7 @@ func (s *Store) writeSnapshot(tx *sql.Tx, f *board.File) error {
 	// Re-read rather than appending the new row: retention buckets by the
 	// time of the last event each snapshot folds in, which the table knows
 	// and the caller does not.
-	if rows, err = snapshotRowsTx(tx); err != nil {
+	if rows, err = snapshotRowsOf(tx); err != nil {
 		return err
 	}
 	return prune(tx, rows)

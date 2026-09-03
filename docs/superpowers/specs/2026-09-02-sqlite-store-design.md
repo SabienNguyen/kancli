@@ -28,6 +28,9 @@ later phase can load live tasks through an index.
   `board.events.jsonl`, `board.events/`, `board.snapshots/` and `board.lock`.
   `KANCLI_FILE`, `-file` and the config `file` key keep working: a configured
   `.json` path maps to the `.db` next to it.
+- **Commits are fsynced**: the database runs with `synchronous(FULL)`, so a
+  save that returned success is on disk even if the machine loses power
+  before the next WAL checkpoint.
 - **Event sourcing stays.** Events are the source of truth; snapshots are a
   cache with retention; load is newest snapshot plus replay of the tail.
 - **DuckDB stays for analytics**, fed by a temporary state file (unchanged)

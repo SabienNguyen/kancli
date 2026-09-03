@@ -76,8 +76,17 @@ func (s *Store) dsn() string {
 	if s.path == "" {
 		return fmt.Sprintf("file:kancli-demo-%d?mode=memory&cache=shared&_txlock=immediate", memCounter.Add(1))
 	}
-	return "file:" + s.path +
-		"?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_txlock=immediate"
+	return dsnFor(s.path)
+}
+
+// dsnFor is the connection string for a database file. synchronous is FULL
+// rather than NORMAL: under NORMAL a WAL commit is only fsynced at the next
+// checkpoint, so a Save that returned nil could still be lost to a power
+// failure. FULL costs one fsync per commit, which no interactive board
+// notices.
+func dsnFor(path string) string {
+	return "file:" + path +
+		"?_pragma=busy_timeout(3000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)&_txlock=immediate"
 }
 
 // conn opens the database on first use and creates or checks the schema.
@@ -172,6 +181,14 @@ func (s *Store) ensureSchema(db *sql.DB) error {
 	return nil
 }
 
+// querier is what the row readers need: *sql.DB when a single statement is
+// enough, *sql.Tx when several reads have to see the same snapshot of the
+// database.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // dataVersion returns SQLite's change counter for this connection. It moves
 // when another connection commits, and never for our own writes.
 func (s *Store) dataVersion() (int64, error) {
@@ -179,8 +196,13 @@ func (s *Store) dataVersion() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return dataVersionOf(db)
+}
+
+// dataVersionOf reads the change counter through q.
+func dataVersionOf(q querier) (int64, error) {
 	var v int64
-	if err := db.QueryRow(`PRAGMA data_version`).Scan(&v); err != nil {
+	if err := q.QueryRow(`PRAGMA data_version`).Scan(&v); err != nil {
 		return 0, err
 	}
 	return v, nil
@@ -207,13 +229,9 @@ type snapshotRow struct {
 // imported or written in bulk carries today's snapshots over events dated
 // years back, and picking by wall clock then falls all the way to the
 // empty base and replays everything.
-func (s *Store) cutSeq(t time.Time) (int64, error) {
-	db, err := s.conn()
-	if err != nil {
-		return 0, err
-	}
+func (s *Store) cutSeq(q querier, t time.Time) (int64, error) {
 	var seq sql.NullInt64
-	if err := db.QueryRow(`SELECT max(seq) FROM events WHERE at <= ?`, formatTime(t)).Scan(&seq); err != nil {
+	if err := q.QueryRow(`SELECT max(seq) FROM events WHERE at <= ?`, formatTime(t)).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("read %s: %w", s.Path(), err)
 	}
 	return seq.Int64, nil
@@ -222,24 +240,20 @@ func (s *Store) cutSeq(t time.Time) (int64, error) {
 // readSnapshot returns the newest snapshot covering no more than the events
 // up to upTo (a zero time means "the newest"), or nil when the database
 // holds none.
-func (s *Store) readSnapshot(upTo time.Time) (*board.File, int64, bool, error) {
+func (s *Store) readSnapshot(q querier, upTo time.Time) (*board.File, int64, bool, error) {
 	cut := int64(-1) // negative: no upper bound
 	if !upTo.IsZero() {
 		var err error
-		if cut, err = s.cutSeq(upTo); err != nil {
+		if cut, err = s.cutSeq(q, upTo); err != nil {
 			return nil, 0, false, err
 		}
 	}
-	return s.readSnapshotAt(cut)
+	return s.readSnapshotAt(q, cut)
 }
 
 // readSnapshotAt returns the newest snapshot at or before sequence cut. A
 // negative cut asks for the newest snapshot of all.
-func (s *Store) readSnapshotAt(cut int64) (*board.File, int64, bool, error) {
-	db, err := s.conn()
-	if err != nil {
-		return nil, 0, false, err
-	}
+func (s *Store) readSnapshotAt(q querier, cut int64) (*board.File, int64, bool, error) {
 	query := `SELECT seq, state FROM snapshots ORDER BY seq DESC LIMIT 1`
 	args := []any{}
 	if cut >= 0 {
@@ -248,7 +262,7 @@ func (s *Store) readSnapshotAt(cut int64) (*board.File, int64, bool, error) {
 	}
 	var seq int64
 	var blob []byte
-	err = db.QueryRow(query, args...).Scan(&seq, &blob)
+	err := q.QueryRow(query, args...).Scan(&seq, &blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, 0, false, nil
 	}
@@ -277,16 +291,12 @@ func (s *Store) snapshotRows() ([]snapshotRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(snapshotRowQuery)
-	if err != nil {
-		return nil, err
-	}
-	return scanSnapshotRows(rows)
+	return snapshotRowsOf(db)
 }
 
-// snapshotRowsTx is snapshotRows inside an open transaction.
-func snapshotRowsTx(tx *sql.Tx) ([]snapshotRow, error) {
-	rows, err := tx.Query(snapshotRowQuery)
+// snapshotRowsOf lists every snapshot visible through q.
+func snapshotRowsOf(q querier) ([]snapshotRow, error) {
+	rows, err := q.Query(snapshotRowQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -404,8 +414,8 @@ func scanEvents(rows *sql.Rows) ([]board.Event, error) {
 }
 
 // readEvents returns the events after seq, optionally stopping at a time.
-func (s *Store) readEvents(after int64, upTo time.Time) ([]board.Event, error) {
-	return s.readEventsThrough(after, -1, upTo)
+func (s *Store) readEvents(q querier, after int64, upTo time.Time) ([]board.Event, error) {
+	return s.readEventsThrough(q, after, -1, upTo)
 }
 
 // readEventsThrough returns the events after seq and at or before sequence
@@ -413,11 +423,7 @@ func (s *Store) readEvents(after int64, upTo time.Time) ([]board.Event, error) {
 // two bounds agree for well-formed history; keeping both means an event
 // whose timestamp runs ahead of its sequence still cannot leak into a view
 // of the past.
-func (s *Store) readEventsThrough(after, through int64, upTo time.Time) ([]board.Event, error) {
-	db, err := s.conn()
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) readEventsThrough(q querier, after, through int64, upTo time.Time) ([]board.Event, error) {
 	query := `SELECT ` + eventColumns + ` FROM events WHERE seq > ?`
 	args := []any{after}
 	if through >= 0 {
@@ -429,7 +435,7 @@ func (s *Store) readEventsThrough(after, through int64, upTo time.Time) ([]board
 		args = append(args, formatTime(upTo))
 	}
 	query += ` ORDER BY seq`
-	rows, err := db.Query(query, args...)
+	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.Path(), err)
 	}
@@ -451,26 +457,31 @@ func insertEvents(tx *sql.Tx, events []board.Event, next int64) (int64, error) {
 		if e.V == 0 {
 			e.V = board.EventVersion
 		}
-		var data any
-		if len(e.Data) > 0 {
-			data = []byte(e.Data)
-		}
-		if _, err := stmt.Exec(e.Seq, e.V, formatTime(e.At), e.Board, string(e.Kind),
-			e.Task, e.From, e.To, e.Index, e.Text, data, e.Actor); err != nil {
+		if err := execEvent(stmt, *e, e.Seq); err != nil {
 			return next, fmt.Errorf("append event %d: %w", e.Seq, err)
 		}
 	}
 	return next, nil
 }
 
-// maxEventSeq is the highest sequence number in the database.
-func (s *Store) maxEventSeq() (int64, error) {
-	db, err := s.conn()
-	if err != nil {
-		return 0, err
+// execEvent writes one event row through a prepared insert. Both the live
+// append and the legacy import go through it, so the row encoding (the
+// column order, the time format, a NULL payload for an empty one) is
+// written down once.
+func execEvent(stmt *sql.Stmt, e board.Event, seq int64) error {
+	var data any
+	if len(e.Data) > 0 {
+		data = []byte(e.Data)
 	}
+	_, err := stmt.Exec(seq, e.V, formatTime(e.At), e.Board, string(e.Kind),
+		e.Task, e.From, e.To, e.Index, e.Text, data, e.Actor)
+	return err
+}
+
+// maxEventSeqOf is the highest sequence number visible through q.
+func maxEventSeqOf(q querier) (int64, error) {
 	var seq sql.NullInt64
-	if err := db.QueryRow(`SELECT max(seq) FROM events`).Scan(&seq); err != nil {
+	if err := q.QueryRow(`SELECT max(seq) FROM events`).Scan(&seq); err != nil {
 		return 0, err
 	}
 	return seq.Int64, nil

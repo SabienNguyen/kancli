@@ -14,7 +14,9 @@ Older kancli builds kept the same data in `board.json`,
 `board.events.jsonl`, `board.events/`, `board.snapshots/` and `board.lock`.
 Nothing about the JSON shapes changed: `board.FileVersion` is still 2 and
 `board.EventVersion` is still 1. Only the container is new, and the store
-format in `meta.format` is its own number.
+format in `meta.format` is its own number. Every commit is fsynced (the
+database runs with `synchronous(FULL)`), so a change kancli has reported as
+saved survives a power failure.
 
 ## What a user gets on upgrade
 
