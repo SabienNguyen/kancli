@@ -72,6 +72,71 @@ func TestPruneKeepsFiveNewestPlusBase(t *testing.T) {
 	}
 }
 
+// TestPruneBucketsByEventTime covers a history whose snapshots were all
+// written in one wall-clock instant over events spanning many days, which
+// is what an import or a scripted bulk run leaves behind. Retention has to
+// bucket by the time of the events a snapshot folds in: bucketing by the
+// snapshot's own time collapses the whole history into one day, keeps only
+// the newest five, and leaves an --as-of for any earlier point replaying
+// from the empty base (LoadAsOf picks its base by sequence).
+func TestPruneBucketsByEventTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "board.db")
+	st := New(path)
+	defer func() { _ = st.Close() }()
+
+	// A Monday, so the ISO weeks below start where the days do.
+	day := func(i int) time.Time { return time.Date(2026, 1, 4+i, 9, 0, 0, 0, time.Local) }
+	fold := time.Date(2026, 3, 1, 12, 0, 0, 0, time.Local) // every snapshot is written here
+	now := pinNow(t, day(1))
+	f, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := f.Active()
+	b.SetClock(nil)
+
+	// Forty compactions: one event per day over forty days, each folded at
+	// the same instant, so every snapshot row carries the same at.
+	for i := 1; i <= 40; i++ {
+		*now = day(i)
+		if _, err := b.AddTask(board.Task{Title: fmt.Sprintf("task %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+		*now = fold
+		if err := st.Compact(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := st.snapshotRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.seq != 0 && !r.at.Equal(fold) {
+			t.Fatalf("snapshot %d was folded at %v, want every fold at %v", r.seq, r.at, fold)
+		}
+	}
+
+	// Measured from the newest event (day 40), the last 30 days are days 11
+	// to 40: one snapshot each. Day 10 lands exactly on the cutoff, so it
+	// and the days before it fall into ISO weeks: days 1 to 7 are one week
+	// (newest: sequence 7) and days 8 to 10 the next (sequence 10). The
+	// empty base always stays.
+	want := []int64{0, 7, 10}
+	for seq := int64(11); seq <= 40; seq++ {
+		want = append(want, seq)
+	}
+	seqs, err := st.snapshotSeqs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(seqs, want) {
+		t.Errorf("snapshots = %v, want %v", seqs, want)
+	}
+}
+
 // TestImportLeavesNoJournalFiles checks that the first run on a legacy
 // directory ends with board.db alone: the importer's own connection is
 // checkpointed and closed before the store opens, so Close can truncate

@@ -492,15 +492,19 @@ func (s *Store) writeSnapshot(tx *sql.Tx, f *board.File) error {
 		if err := insertSnapshot(tx, f.EmptyBase(), 0); err != nil {
 			return err
 		}
-		rows = append(rows, snapshotRow{seq: 0})
 	}
 	f.LastSeq = s.nextSeq - 1
 	f.SnapshotAt = board.Now()
 	if err := insertSnapshot(tx, f, f.LastSeq); err != nil {
 		return err
 	}
-	rows = append(rows, snapshotRow{seq: f.LastSeq, at: f.SnapshotAt})
-	return prune(tx, rows, board.Now())
+	// Re-read rather than appending the new row: retention buckets by the
+	// time of the last event each snapshot folds in, which the table knows
+	// and the caller does not.
+	if rows, err = snapshotRowsTx(tx); err != nil {
+		return err
+	}
+	return prune(tx, rows)
 }
 
 // ChangedOnDisk reports whether another process has written to the

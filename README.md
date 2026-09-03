@@ -485,7 +485,9 @@ events instead of overwriting each other.
 
 `kancli compact` writes a snapshot row for the current state and prunes old
 ones: it keeps the empty base, the newest 5, one per day for the last 30
-days and one per ISO week before that. It happens on its own every 500
+days and one per ISO week before that, counting those days by the
+timestamps of the events each snapshot folds in rather than by when the
+fold ran. It happens on its own every 500
 events, so you rarely need to run it. Events are never pruned, so `-as-of`
 still reaches any point in the history.
 

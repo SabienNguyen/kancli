@@ -37,7 +37,9 @@ format in `meta.format` is its own number.
 - Snapshots are pruned instead of kept forever. The retention policy keeps
   sequence 0 (the empty base), the newest 5 snapshots, the newest per
   calendar day for the last 30 days, and the newest per ISO week before
-  that. Events are never pruned, so `--as-of` still answers for any point
+  that. The days are measured by the timestamps of the events each
+  snapshot folds in, not by when the fold ran, so an imported or bulk
+  written history keeps a base per day of its own history. Events are never pruned, so `--as-of` still answers for any point
   in the history; it just replays a few more events for old dates.
 - Undo no longer writes a copy of the whole board. It emits the two event
   kinds `task.reverted` (upsert one task by id) and `board.reverted`

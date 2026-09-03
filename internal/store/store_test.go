@@ -440,16 +440,20 @@ func TestSnapshotRetention(t *testing.T) {
 
 	// The policy: sequence zero, the newest five, the newest per calendar
 	// day for the last 30 days and the newest per ISO week before that.
+	// The days are the days of the events each snapshot folds in; these
+	// snapshots have no events, so each one answers with its own time, and
+	// the 30 days are counted back from the newest of them rather than
+	// from the wall clock.
 	want := map[int64]bool{0: true}
 	for _, r := range rows[len(rows)-5:] {
 		want[r.seq] = true
 	}
 	newest := map[string]int64{}
-	cutoff := now.AddDate(0, 0, -30)
+	cutoff := bucketNow(rows).AddDate(0, 0, -30)
 	for _, r := range rows {
-		key := r.at.Format("2006-01-02")
-		if !r.at.After(cutoff) {
-			y, w := r.at.ISOWeek()
+		key := r.eventAt.Format("2006-01-02")
+		if !r.eventAt.After(cutoff) {
+			y, w := r.eventAt.ISOWeek()
 			key = fmt.Sprintf("%04d-W%02d", y, w)
 		}
 		if r.seq > newest[key] {
@@ -464,7 +468,7 @@ func TestSnapshotRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prune(tx, rows, now); err != nil {
+	if err := prune(tx, rows); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

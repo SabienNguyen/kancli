@@ -189,7 +189,13 @@ func (s *Store) dataVersion() (int64, error) {
 
 type snapshotRow struct {
 	seq int64
-	at  time.Time
+	at  time.Time // when the fold was written
+	// eventAt is the time of the last event the snapshot folds in, which
+	// is what the snapshot covers; at only records when the fold ran. It
+	// falls back to at when the sequence has no event row (sequence zero,
+	// or a snapshot imported without its event).
+	eventAt  time.Time
+	hasEvent bool
 }
 
 // cutSeq is the highest event sequence stamped at or before t, or zero
@@ -259,13 +265,18 @@ func (s *Store) readSnapshotAt(cut int64) (*board.File, int64, bool, error) {
 	return f, seq, true, nil
 }
 
+// snapshotRowQuery lists every snapshot with the time of the last event it
+// folds in, in one query: retention buckets by event time, and reading it
+// per row would be a query per snapshot.
+const snapshotRowQuery = `SELECT seq, at, (SELECT at FROM events WHERE events.seq = snapshots.seq) FROM snapshots ORDER BY seq`
+
 // snapshotRows lists every snapshot, oldest first.
 func (s *Store) snapshotRows() ([]snapshotRow, error) {
 	db, err := s.conn()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT seq, at FROM snapshots ORDER BY seq`)
+	rows, err := db.Query(snapshotRowQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +285,7 @@ func (s *Store) snapshotRows() ([]snapshotRow, error) {
 
 // snapshotRowsTx is snapshotRows inside an open transaction.
 func snapshotRowsTx(tx *sql.Tx) ([]snapshotRow, error) {
-	rows, err := tx.Query(`SELECT seq, at FROM snapshots ORDER BY seq`)
+	rows, err := tx.Query(snapshotRowQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +298,8 @@ func scanSnapshotRows(rows *sql.Rows) ([]snapshotRow, error) {
 	for rows.Next() {
 		var r snapshotRow
 		var at string
-		if err := rows.Scan(&r.seq, &at); err != nil {
+		var eventAt sql.NullString
+		if err := rows.Scan(&r.seq, &at, &eventAt); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(at)
@@ -295,6 +307,13 @@ func scanSnapshotRows(rows *sql.Rows) ([]snapshotRow, error) {
 			return nil, err
 		}
 		r.at = t
+		r.eventAt = t
+		if eventAt.Valid {
+			if r.eventAt, err = parseTime(eventAt.String); err != nil {
+				return nil, err
+			}
+			r.hasEvent = true
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -472,32 +491,28 @@ func (s *Store) countTail() (int, error) {
 // prune deletes snapshots the retention policy no longer needs: sequence
 // zero and the newest five always stay, then one per calendar day for the
 // last 30 days and one per ISO week before that.
-func prune(tx *sql.Tx, rows []snapshotRow, now time.Time) error {
+//
+// The days are the days of the events, not of the folds. A snapshot's own
+// at says when compaction ran, so bucketing by it collapses a bulk import
+// or a busy day of compactions into a single day bucket, throwing away the
+// bases an --as-of for an earlier point would have started from (LoadAsOf
+// picks its base by sequence). "Now" is likewise the newest event's time
+// rather than the wall clock, which makes what survives a function of the
+// history alone.
+//
+// rows come straight from the snapshots table, so each sequence appears
+// once: a compaction that adds no events rewrites the newest snapshot in
+// place instead of adding a second row for it.
+func prune(tx *sql.Tx, rows []snapshotRow) error {
 	keep := map[int64]bool{0: true}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].seq < rows[j].seq })
-	// The caller hands us the snapshot it is writing alongside the rows
-	// already in the table, and writing one is INSERT OR REPLACE: a
-	// compaction that adds no events rewrites the newest snapshot in place
-	// and the same sequence arrives twice. Collapsing repeats keeps that
-	// rewrite from using up two of the five newest slots (which is how the
-	// fifth-newest snapshot used to be deleted). The later row wins, since
-	// it carries the replacement's timestamp.
-	uniq := make([]snapshotRow, 0, len(rows))
-	for _, r := range rows {
-		if n := len(uniq); n > 0 && uniq[n-1].seq == r.seq {
-			uniq[n-1] = r
-			continue
-		}
-		uniq = append(uniq, r)
-	}
-	rows = uniq
 	for i := len(rows) - 1; i >= 0 && len(rows)-i <= 5; i-- {
 		keep[rows[i].seq] = true
 	}
-	cutoff := now.AddDate(0, 0, -30)
+	cutoff := bucketNow(rows).AddDate(0, 0, -30)
 	newest := map[string]int64{} // bucket -> newest seq in it
 	for _, r := range rows {
-		at := r.at.In(time.Local)
+		at := r.eventAt.In(time.Local)
 		var bucket string
 		if at.After(cutoff) {
 			bucket = at.Format("2006-01-02")
@@ -521,4 +536,30 @@ func prune(tx *sql.Tx, rows []snapshotRow, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// bucketNow is the point retention measures its 30 days back from: the
+// newest event any snapshot folds in. Snapshots with no event of their own
+// (sequence zero above all, which is stamped when the database is created)
+// only answer when there is no event at all, so that a history written
+// today over old events still buckets by its old days.
+func bucketNow(rows []snapshotRow) time.Time {
+	var now time.Time
+	for _, r := range rows {
+		if r.hasEvent && r.eventAt.After(now) {
+			now = r.eventAt
+		}
+	}
+	if !now.IsZero() {
+		return now
+	}
+	for _, r := range rows {
+		if r.at.After(now) {
+			now = r.at
+		}
+	}
+	if now.IsZero() {
+		now = board.Now()
+	}
+	return now
 }
