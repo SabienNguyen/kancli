@@ -266,7 +266,7 @@ func eventFiles(path string) []string {
 func checkIDs(b *board.Board, ids []int) error {
 	for _, id := range ids {
 		if b.Task(id) == nil {
-			return fmt.Errorf("no task #%d", id)
+			return fmt.Errorf("no %s #%d", b.Noun(), id)
 		}
 	}
 	return nil
@@ -321,7 +321,7 @@ func (c *cli) add(o addOpts, title string) error {
 	if err := c.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.stdout, "%s added to %s\n", added.Ref(), b.Column(added.Column).Name)
+	fmt.Fprintf(c.stdout, "Added %s %s to %s\n", b.Noun(), added.Ref(), b.Column(added.Column).Name)
 	return nil
 }
 
@@ -410,18 +410,19 @@ func (c *cli) show(args []string) error {
 	for i, id := range ids {
 		t := b.Task(id)
 		if t == nil {
-			return fmt.Errorf("no task #%d", id)
+			return fmt.Errorf("no %s #%d", b.Noun(), id)
 		}
 		if i > 0 {
 			fmt.Fprintln(c.stdout)
 		}
-		fmt.Fprint(c.stdout, formatTask(b, *t, board.Now()))
+		fmt.Fprint(c.stdout, formatTask(c.env.File, b, *t, board.Now()))
 	}
 	return nil
 }
 
-// formatTask renders a task as plain text.
-func formatTask(b *board.Board, t board.Task, now time.Time) string {
+// formatTask renders a task as plain text. f resolves the boards of links
+// that leave b; it may be nil.
+func formatTask(f *board.File, b *board.Board, t board.Task, now time.Time) string {
 	var sb strings.Builder
 	col := t.Column
 	if cc := b.Column(t.Column); cc != nil {
@@ -447,6 +448,9 @@ func formatTask(b *board.Board, t board.Task, now time.Time) string {
 	if t.Archived() {
 		fmt.Fprintf(&sb, "  archived:  %s\n", t.ArchivedAt.Format("2006-01-02 15:04"))
 	}
+	if done, total := b.SubtaskProgress(t.ID); total > 0 {
+		fmt.Fprintf(&sb, "  subtasks:  %d/%d\n", done, total)
+	}
 	if t.Description != "" {
 		sb.WriteString("\n" + indent(t.Description) + "\n")
 	}
@@ -464,7 +468,8 @@ func formatTask(b *board.Board, t board.Task, now time.Time) string {
 	if rels := b.Relations(t.ID); len(rels) > 0 {
 		sb.WriteString("\n  Links\n")
 		for _, r := range rels {
-			fmt.Fprintf(&sb, "    %-11s #%d %s (%s)\n", r.Label, r.Task.ID, r.Task.Title, board.ColName(b, r.Task.Column))
+			ref := board.Ref{Board: r.Board, ID: r.Task.ID}
+			fmt.Fprintf(&sb, "    %-11s %s %s (%s)\n", r.Label, ref, r.Task.Title, board.ColName(relBoard(f, b, r), r.Task.Column))
 		}
 	}
 	if b.IsBlocked(t.ID) {
@@ -489,6 +494,17 @@ func formatTask(b *board.Board, t board.Task, now time.Time) string {
 		}
 	}
 	return sb.String()
+}
+
+// relBoard is the board a relation's task lives on, for its column name.
+func relBoard(f *board.File, b *board.Board, r board.Relation) *board.Board {
+	if r.Board == "" || f == nil {
+		return b
+	}
+	if ob := f.Board(r.Board); ob != nil {
+		return ob
+	}
+	return b
 }
 
 func indent(s string) string {
@@ -573,50 +589,129 @@ func (c *cli) archive(args []string, archive bool) error {
 	return c.Save()
 }
 
-func (c *cli) link(args []string) error {
-	ids, err := parseIDs([]string{args[0], args[2]})
-	if err != nil {
-		return err
+// refBoard is the board a ref names, or cur when it names none.
+func (c *cli) refBoard(cur *board.Board, r board.Ref) (*board.Board, error) {
+	if r.Board == "" || r.Board == cur.ID {
+		return cur, nil
 	}
+	ob := c.env.File.Board(r.Board)
+	if ob == nil {
+		return nil, fmt.Errorf("no board %q", r.Board)
+	}
+	return ob, nil
+}
+
+// relTo rewrites a ref read against cur so it can be stored on on.
+func relTo(cur, on *board.Board, r board.Ref) board.Ref {
+	id := r.Board
+	if id == "" {
+		id = cur.ID
+	}
+	if id == on.ID {
+		return board.Ref{ID: r.ID}
+	}
+	return board.Ref{Board: id, ID: r.ID}
+}
+
+func (c *cli) link(args []string) error {
 	b, err := c.env.board()
 	if err != nil {
 		return err
 	}
-	from, kind, to, err := board.ParseLinkSpec(ids[0], args[1], ids[1])
+	from, err := board.ParseRef(args[0], b, c.env.File)
 	if err != nil {
 		return err
 	}
-	if err := b.AddLink(from, kind, to); err != nil {
+	to, err := board.ParseRef(args[2], b, c.env.File)
+	if err != nil {
+		return err
+	}
+	// Inverse words ("blocked-by", "parent-of") swap the two ends, so the
+	// link is stored on whichever side the normalised relation starts from.
+	first, kind, _, err := board.ParseLinkSpec(0, args[1], 1)
+	if err != nil {
+		return err
+	}
+	src, dst := from, to
+	if first == 1 {
+		src, dst = to, from
+	}
+	srcBoard, err := c.refBoard(b, src)
+	if err != nil {
+		return err
+	}
+	if err := srcBoard.AddLinkTo(src.ID, kind, relTo(b, srcBoard, dst)); err != nil {
 		return err
 	}
 	if err := c.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.stdout, "#%d %s #%d\n", ids[0], strings.ReplaceAll(strings.ToLower(args[1]), "_", "-"), ids[1])
+	fmt.Fprintf(c.stdout, "%s %s %s\n", from, strings.ReplaceAll(strings.ToLower(args[1]), "_", "-"), to)
 	return nil
 }
 
 func (c *cli) unlink(args []string) error {
-	ids, err := parseIDs(args)
-	if err != nil {
-		return err
-	}
 	b, err := c.env.board()
 	if err != nil {
 		return err
 	}
-	if err := checkIDs(b, ids); err != nil {
+	from, err := board.ParseRef(args[0], b, c.env.File)
+	if err != nil {
 		return err
 	}
-	n := b.RemoveLinksBetween(ids[0], ids[1])
+	to, err := board.ParseRef(args[1], b, c.env.File)
+	if err != nil {
+		return err
+	}
+	fromBoard, err := c.refBoard(b, from)
+	if err != nil {
+		return err
+	}
+	toBoard, err := c.refBoard(b, to)
+	if err != nil {
+		return err
+	}
+	for _, side := range []struct {
+		b *board.Board
+		r board.Ref
+	}{{fromBoard, from}, {toBoard, to}} {
+		if side.b.Task(side.r.ID) == nil {
+			return fmt.Errorf("no %s %s", side.b.Noun(), side.r)
+		}
+	}
+	n := unlinkOneWay(fromBoard, from.ID, toBoard, to.ID) + unlinkOneWay(toBoard, to.ID, fromBoard, from.ID)
 	if n == 0 {
-		return fmt.Errorf("#%d and #%d are not linked", ids[0], ids[1])
+		return fmt.Errorf("%s and %s are not linked", from, to)
 	}
 	if err := c.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.stdout, "removed %d link%s between #%d and #%d\n", n, board.Plural(n), ids[0], ids[1])
+	fmt.Fprintf(c.stdout, "removed %d link%s between %s and %s\n", n, board.Plural(n), from, to)
 	return nil
+}
+
+// unlinkOneWay drops the links a task stores towards another task, which
+// may live on another board, and returns how many were removed.
+func unlinkOneWay(src *board.Board, id int, dst *board.Board, dstID int) int {
+	t := src.Task(id)
+	if t == nil {
+		return 0
+	}
+	want := board.Ref{ID: dstID}
+	if dst.ID != src.ID {
+		want.Board = dst.ID
+	}
+	n := 0
+	for _, l := range append([]board.Link(nil), t.Links...) {
+		lb := l.Board
+		if lb == "" {
+			lb = src.ID
+		}
+		if l.Task == dstID && lb == dst.ID && src.RemoveLinkTo(id, l.Kind, want) {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *cli) remove(args []string) error {
@@ -1116,28 +1211,47 @@ func applyMeta(t *board.Task, meta string) {
 
 func (c *cli) boardsList() error {
 	f := c.env.File
+	// The kind column only appears once a goal board exists, so a file of
+	// ticket boards lists exactly as it did before.
+	kindWidth := 0
+	for _, b := range f.Boards {
+		if b.IsGoals() {
+			kindWidth = 7
+			break
+		}
+	}
 	for _, b := range f.Boards {
 		mark := " "
 		if b.ID == f.ActiveBoard {
 			mark = "*"
+		}
+		kind := ""
+		if b.IsGoals() {
+			kind = "goals"
 		}
 		n := len(b.Live())
 		suffix := ""
 		if b.Description != "" {
 			suffix = "  " + b.Description
 		}
-		fmt.Fprintf(c.stdout, "%s %-20s %d task%s%s\n", mark, b.Name, n, board.Plural(n), suffix)
+		// A negative width left-aligns; 0 drops the column entirely.
+		fmt.Fprintf(c.stdout, "%s %-20s %*s%d task%s%s\n", mark, b.Name, -kindWidth, kind, n, board.Plural(n), suffix)
 	}
 	return nil
 }
 
-func (c *cli) boardsNew(name, desc string) error {
+func (c *cli) boardsNew(name, desc string, goals bool) error {
 	f := c.env.File
 	b, err := f.AddBoard(name)
 	if err != nil {
 		return err
 	}
 	f.Activate(b.ID) //nolint:errcheck // just created
+	if goals {
+		if err := f.SetBoardKind(b.ID, board.BoardKindGoals); err != nil {
+			return err
+		}
+	}
 	if desc != "" {
 		if err := f.DescribeBoard(b.ID, desc); err != nil {
 			return err
@@ -1147,6 +1261,22 @@ func (c *cli) boardsNew(name, desc string) error {
 		return err
 	}
 	fmt.Fprintf(c.stdout, "Created board %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) boardsKind(key, kind string) error {
+	f := c.env.File
+	b := f.Board(key)
+	if b == nil {
+		return fmt.Errorf("no board %q", key)
+	}
+	if err := f.SetBoardKind(b.ID, kind); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stdout, "Made %q a %s board\n", b.Name, b.Noun())
 	return nil
 }
 
