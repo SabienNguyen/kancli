@@ -89,7 +89,12 @@ func (c *cli) stats(o statsOpts) error {
 			return err
 		}
 		defer cleanup()
-		views := store.SQLViews(state, c.env.Store.EventFiles(), store.DoneColumns(c.env.File))
+		eventsFile, eventsCleanup, err := store.WriteEventsFile(c.env.Store)
+		if err != nil {
+			return err
+		}
+		defer eventsCleanup()
+		views := store.SQLViews(state, eventFiles(eventsFile), store.DoneColumns(c.env.File))
 		if showSQL {
 			fmt.Fprint(c.stdout, views)
 			fmt.Fprint(c.stdout, "\n"+store.ExampleQueries)
@@ -244,8 +249,17 @@ func (c *cli) Compact() error {
 	} else if err != nil {
 		return err
 	}
-	fmt.Fprintf(c.stdout, "Snapshot written to %s (%d event%s archived)\n", c.env.Store.Path(), n, board.Plural(n))
+	fmt.Fprintf(c.stdout, "Snapshot written to %s (%d event%s folded)\n", c.env.Store.Path(), n, board.Plural(n))
 	return nil
+}
+
+// eventFiles wraps the exported event log for SQLViews, which takes a list
+// so an empty export can define the events view as empty.
+func eventFiles(path string) []string {
+	if path == "" {
+		return nil
+	}
+	return []string{path}
 }
 
 // checkIDs fails before anything is changed when an id does not exist.
@@ -742,7 +756,12 @@ func (c *cli) export(o exportOpts) error {
 			return err
 		}
 		defer cleanup()
-		views := store.SQLViews(state, c.env.Store.EventFiles(), store.DoneColumns(c.env.File))
+		eventsFile, eventsCleanup, err := store.WriteEventsFile(c.env.Store)
+		if err != nil {
+			return err
+		}
+		defer eventsCleanup()
+		views := store.SQLViews(state, eventFiles(eventsFile), store.DoneColumns(c.env.File))
 		source := fmt.Sprintf("SELECT * FROM tasks WHERE board = %s", store.SQLLiteral(b.ID))
 		if events {
 			source = fmt.Sprintf("SELECT * FROM events WHERE board = %s OR board IS NULL", store.SQLLiteral(b.ID))

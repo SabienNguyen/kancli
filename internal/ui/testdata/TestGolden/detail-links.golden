@@ -1,36 +1,36 @@
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                  ╭─────────────────────────────────────────────────────────────────────────────────╮                   
-                  │                                                                                 │                   
-                  │  Link #1 (e.g. blocks 15, blocked-by 15, subtask-of 3, parent-of 7, relates 9)  │                   
-                  │                                                                                 │                   
-                  │  › blocked-by #2                                                                │                   
-                  │                                                                                 │                   
-                  │  enter to save • esc to cancel                                                  │                   
-                  │                                                                                 │                   
-                  ╰─────────────────────────────────────────────────────────────────────────────────╯                   
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+          ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮          
+          │                                                                                                  │          
+          │  #1 Write the release notes                                                                      │          
+          │  in To Do · ↑ high · due 2026-08-26 (tomorrow) · @sam · +docs                                    │          
+          │  created 21d ago · updated 11d ago                                                               │          
+          │                                                                                                  │          
+          │  Description                                                                                     │          
+          │  Cover the **new search syntax**, undo and the CLI.                                              │          
+          │                                                                                                  │          
+          │  • link to the changelog                                                                         │          
+          │  • mention kancli review                                                                         │          
+          │  • screenshots of the *stats* view                                                               │          
+          │                                                                                                  │          
+          │  Checklist 1/3                                                                                   │          
+          │    ☑ Draft                                                                                       │          
+          │    ☐ Review                                                                                      │          
+          │    ☐ Publish                                                                                     │          
+          │                                                                                                  │          
+          │  Attachments                                                                                     │          
+          │    https://github.com/charmbracelet/kancli                                                       │          
+          │                                                                                                  │          
+          │  Links                                                                                           │          
+          │    blocked by #2 Fix the flaky terminal resize test (To Do)                                      │          
+          │                                                                                                  │          
+          │  Comments                                                                                        │          
+          │    none · press c to comment                                                                     │          
+          │                                                                                                  │          
+          │  Activity                                                                                        │          
+          │    2026-08-13 19:30  Attached https://github.com/charmbracelet/kancli                            │          
+          │    2026-08-13 19:30  Checked "Draft"                                                             │          
+          │    2026-08-04 10:30  Created in To Do                                                            │          
+          │                                                                                                  │          
+          │  e edit • c comment • t add checklist item • l link task • g go to linked task …                 │          
+          │                                                                                                  │          
+          ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯          
+ Linked #1 is blocked by #2                                                                                             

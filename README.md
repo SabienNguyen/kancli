@@ -13,8 +13,8 @@ It is built with [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Lip Gloss](https://github.com/charmbracelet/lipgloss) and
 [ntcharts](https://github.com/NimbleMarkets/ntcharts).
 
-It is a single-user, local tool by design. Everything lives in a few plain
-files on your machine; there is no server or account.
+It is a single-user, local tool by design. Everything lives in one SQLite
+file on your machine; there is no server or account.
 
 ![The board: three columns with priorities, due dates, labels and a WIP limit](docs/screenshots/01-board.png)
 
@@ -105,8 +105,9 @@ and Parquet export. Everything else is pure Go.
 
 Rebuild or reinstall the binary the same way you installed it (`./install.sh`
 from an updated checkout, or the release archive). Your data is picked up as
-is. If the data format changed, the first run copies the old files to
-`board.backups/vN/` next to `board.json` and prints where they are; a
+is. This version keeps the board in `board.db`; the first run imports your
+`board.json` and its history, moves the old files into `board.backups/v2/`
+next to it and prints where they went. There is nothing to do by hand. A
 renamed config setting keeps working and prints its new name. An older
 kancli refuses to open data from a newer one rather than touching it. See
 `docs/compatibility.md` for the details.
@@ -461,36 +462,55 @@ stateDiagram-v2
 
 ## Storage and files
 
-Everything is plain files under one directory, no database and no network:
+Everything lives in one file, no server and no network:
 
-| File                     | What                                                    |
-| ------------------------ | ------------------------------------------------------- |
-| `board.json`             | Snapshot of the full state as of `last_seq`             |
-| `board.events.jsonl`     | Events appended since the snapshot, one JSON per line   |
-| `board.events/`          | Archived event segments, immutable, named by sequence   |
-| `board.snapshots/`       | Every snapshot ever written, used by `-as-of`           |
-| `board.lock`             | Cross-process lock                                      |
-| `config.json`            | Optional configuration                                  |
+| File          | What                                        |
+| ------------- | ------------------------------------------- |
+| `board.db`    | SQLite database: every event, the snapshots |
+| `config.json` | Optional configuration                      |
 
 The data directory is `$KANCLI_FILE`'s directory, else
 `$XDG_DATA_HOME/kancli/`, else the OS config directory (`~/.config/kancli/`
 on Linux, `~/Library/Application Support/kancli/` on macOS). The config file
 is `$KANCLI_CONFIG`, else `$XDG_CONFIG_HOME/kancli/config.json`, else the
 same OS config directory. Override the data file for one run with `-file`.
+A `.json` path in `KANCLI_FILE`, `-file` or the config `file` key still
+works: it means the `.db` next to it.
 
-Writes are durable and atomic: an event is one line appended and fsynced,
-and a snapshot is written to a temp file and renamed into place. A crash can
-leave at most a torn last line, which is dropped on load. Boards written by
-older versions (the tutorial's format and the previous snapshot-only format)
-are migrated on first load, and a history is bootstrapped from their task
-timestamps so `-as-of` and stats work from day one.
+Storage is still event-sourced. Every change is one row in `events`; the
+`snapshots` table holds folded state so a load does not replay everything.
+The database runs in WAL mode, so a write is one transaction and a crash
+loses nothing that was saved. Two processes on the same file merge their
+events instead of overwriting each other.
 
-Backups are a copy of the directory. Keeping it in a synced folder is fine;
-two machines editing at the same time will interleave events rather than
-corrupt anything, though very close-together edits to the same task may
-end up in surprising order.
+`kancli compact` writes a snapshot row for the current state and prunes old
+ones: it keeps the empty base, the newest 5, one per day for the last 30
+days and one per ISO week before that, counting those days by the
+timestamps of the events each snapshot folds in rather than by when the
+fold ran. It happens on its own every 500
+events, so you rarely need to run it. Events are never pruned, so `-as-of`
+still reaches any point in the history.
 
-An event line looks like this:
+To back up, quit kancli and copy `board.db`; a clean exit checkpoints the
+write-ahead log, so the one file is the whole board. Copying while the app
+is running may need `board.db-wal` as well. `kancli export` is the other
+way, and it is portable.
+
+To look inside:
+
+```sh
+sqlite3 board.db 'select kind, count(*) from events group by 1'
+datasette board.db          # a browsable web UI over the same tables
+```
+
+JSONL and Parquet export and the DuckDB bridge all still work.
+
+Boards written by older versions (the tutorial's format and the previous
+snapshot-only format) are migrated on first load, and a history is
+bootstrapped from their task timestamps so `-as-of` and stats work from
+day one.
+
+An event row looks like this (`kancli log -json`):
 
 ```json
 {"seq":124,"at":"2026-09-02T09:15:00Z","board":"main","kind":"task.moved","task":12,"from":"in_progress","to":"done","actor":"ui"}
@@ -499,8 +519,8 @@ An event line looks like this:
 Kinds: `task.created|updated|moved|reordered|deleted|archived|restored`,
 `comment.added`, `checklist.added|toggled|removed`,
 `attachment.added|removed`, `column.added|updated|removed|moved`,
-`board.added|renamed|described|removed|activated|restored` (the last is an undo),
-`link.added|removed`.
+`board.added|renamed|described|removed|activated`,
+`link.added|removed`, and `task.reverted` / `board.reverted` for undo.
 
 ## DuckDB
 
@@ -517,7 +537,7 @@ kancli export -o events.parquet -events
 ```
 
 The `tasks` view is built from the current in-memory state, so it is always
-up to date; `events` reads the archived segments and the tail directly. Set
+up to date; `events` is exported from the database as JSONL for the run. Set
 `KANCLI_DUCKDB=/path/to/duckdb` if the binary is not on your `PATH`.
 
 ## Configuration

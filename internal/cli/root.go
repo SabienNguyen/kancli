@@ -22,6 +22,13 @@ func Main(version string, args []string, stdout, stderr io.Writer, launch func(*
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	err := root.Execute()
+	if c.env != nil {
+		// Closing checkpoints the write-ahead log, so a clean exit leaves
+		// board.db alone on disk.
+		if cerr := c.env.Store.Close(); cerr != nil && err == nil {
+			fmt.Fprintf(stderr, "kancli: %v\n", cerr)
+		}
+	}
 	switch {
 	case err == nil:
 		return 0
@@ -175,7 +182,8 @@ func (c *cli) prepare(actor string) error {
 	}
 	c.env = e
 	if up, ok := e.Store.Upgraded(); ok {
-		fmt.Fprintf(c.stderr, "kancli: upgraded your board from format v%d to v%d; the old files are in %s\n", up.From, up.To, up.Backup)
+		fmt.Fprintf(c.stderr, "kancli: moved your board into %s (format v%d → v%d); the old files are in %s\n",
+			e.Store.Path(), up.From, up.To, up.Backup)
 	}
 	for _, w := range e.Cfg.Warnings {
 		fmt.Fprintln(c.stderr, "kancli:", w)

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SabienNguyen/kancli/internal/board"
 )
@@ -23,11 +24,14 @@ func TestLoadsEveryReleasedFormat(t *testing.T) {
 		columns  []string // column of each task, same order
 		comments int      // comments on the last task
 		crlf     bool     // rewrite the event logs with CRLF endings first
+		from     int      // the format the importer reports, 0 for none
 	}{
-		{"v1", "v1", []string{"buy milk", "write code", "stay cool"}, []string{"todo", "in_progress", "done"}, 0, false},
-		{"v2", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, false},
+		{"v1", "v1", []string{"buy milk", "write code", "stay cool"}, []string{"todo", "in_progress", "done"}, 0, false, 1},
+		{"v2", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, false, 2},
 		// A Windows checkout (or an editor) can turn the log into CRLF.
-		{"v2-crlf", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, true},
+		{"v2-crlf", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, true, 2},
+		// The database format: nothing to import, it is opened as it is.
+		{"v3", "v3", []string{"write code", "buy milk", "in v3"}, []string{"in_progress", "in_progress", "todo"}, 0, false, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -36,9 +40,12 @@ func TestLoadsEveryReleasedFormat(t *testing.T) {
 			if c.crlf {
 				toCRLF(t, dir)
 			}
+			// The configured path is still the file store's name; the store
+			// maps it to the board.db beside it.
 			path := filepath.Join(dir, "board.json")
 
 			st := New(path)
+			defer st.Close()
 			f, err := st.Load()
 			if err != nil {
 				t.Fatalf("load %s: %v", c.dir, err)
@@ -60,6 +67,28 @@ func TestLoadsEveryReleasedFormat(t *testing.T) {
 			}
 			check(f, "after load")
 
+			// The database is there, and an imported directory has been
+			// moved out of the way.
+			if !exists(filepath.Join(dir, "board.db")) {
+				t.Fatal("board.db was not created")
+			}
+			up, ok := st.Upgraded()
+			if c.from == 0 {
+				if ok {
+					t.Errorf("Upgraded() = %+v, want none", up)
+				}
+			} else {
+				if !ok || up.From != c.from || up.To != DatabaseFormat {
+					t.Fatalf("Upgraded() = %+v, %v; want From %d, To %d", up, ok, c.from, DatabaseFormat)
+				}
+				if want := filepath.Join(dir, "board.backups"); !strings.HasPrefix(up.Backup, want+string(filepath.Separator)) {
+					t.Errorf("backup dir = %q, want one under %q", up.Backup, want)
+				}
+				if exists(filepath.Join(dir, "board.json")) {
+					t.Error("board.json was copied, not moved")
+				}
+			}
+
 			// A mutation and a save must work on top of the old data.
 			if _, err := f.Active().AddTask(board.Task{Title: "added after upgrade"}); err != nil {
 				t.Fatal(err)
@@ -71,7 +100,9 @@ func TestLoadsEveryReleasedFormat(t *testing.T) {
 			c.columns = append(c.columns, f.Active().Columns[0].ID)
 			c.comments = 0
 
-			again, err := New(path).Load()
+			next := New(path)
+			defer next.Close()
+			again, err := next.Load()
 			if err != nil {
 				t.Fatalf("reload %s: %v", c.dir, err)
 			}
@@ -170,11 +201,13 @@ func TestLoadBacksUpOlderFormatOnce(t *testing.T) {
 	original, _ := os.ReadFile(path)
 
 	st := New(path)
-	if _, err := st.Load(); err != nil {
+	defer st.Close()
+	f, err := st.Load()
+	if err != nil {
 		t.Fatal(err)
 	}
 	up, ok := st.Upgraded()
-	if !ok || up.From != 1 || up.To != board.FileVersion {
+	if !ok || up.From != 1 || up.To != DatabaseFormat {
 		t.Fatalf("Upgraded() = %+v, %v", up, ok)
 	}
 	if up.Backup != filepath.Join(dir, "board.backups", "v1") {
@@ -185,18 +218,18 @@ func TestLoadBacksUpOlderFormatOnce(t *testing.T) {
 		t.Fatalf("backup is not a byte copy of the original: %v", err)
 	}
 
-	// The second open of an already-current file reports nothing and leaves
-	// the backup alone.
-	f, _ := st.Load()
+	// The second open finds the database and reports nothing, leaving the
+	// backup alone.
 	if err := st.Save(f); err != nil {
 		t.Fatal(err)
 	}
 	st2 := New(path)
+	defer st2.Close()
 	if _, err := st2.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := st2.Upgraded(); ok {
-		t.Error("a current-format file must not report an upgrade")
+	if up2, ok := st2.Upgraded(); ok {
+		t.Errorf("an already-imported board must not report an upgrade: %+v", up2)
 	}
 	got2, _ := os.ReadFile(filepath.Join(up.Backup, "board.json"))
 	if string(got2) != string(original) {
@@ -205,19 +238,22 @@ func TestLoadBacksUpOlderFormatOnce(t *testing.T) {
 }
 
 func TestLoadBacksUpEventLogToo(t *testing.T) {
-	// Simulate a future upgrade: a v2 directory whose snapshot claims to be
-	// older than the current format. Both the snapshot and the live log are
-	// copied.
+	// The whole file-store layout moves into the backup, not just the
+	// state file: the live log, the archived segments and the snapshots.
 	dir := t.TempDir()
 	copyTree(t, filepath.Join("testdata", "v2"), dir)
+	snapDir := filepath.Join(dir, "board.snapshots")
+	if err := os.MkdirAll(snapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := os.ReadFile(filepath.Join(dir, "board.json"))
+	if err := os.WriteFile(filepath.Join(snapDir, "000000000002.json"), state, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "board.json")
-	data, _ := os.ReadFile(path)
-	data = []byte(strings.Replace(string(data), `"version": 2`, `"version": 1`, 1))
-	// version 1 with boards present is decoded as the current format but is
-	// still reported as an upgrade from 1.
-	os.WriteFile(path, data, 0o644) //nolint:errcheck // test data
 
 	st := New(path)
+	defer st.Close()
 	if _, err := st.Load(); err != nil {
 		t.Fatal(err)
 	}
@@ -225,17 +261,24 @@ func TestLoadBacksUpEventLogToo(t *testing.T) {
 	if !ok {
 		t.Fatal("expected an upgrade")
 	}
-	for _, name := range []string{"board.json", "board.events.jsonl"} {
+	if want := filepath.Join(dir, "board.backups", "v2"); up.Backup != want {
+		t.Fatalf("backup dir = %q, want %q", up.Backup, want)
+	}
+	for _, name := range []string{"board.json", "board.events.jsonl", "board.events", "board.snapshots"} {
 		if _, err := os.Stat(filepath.Join(up.Backup, name)); err != nil {
 			t.Errorf("%s not backed up: %v", name, err)
+		}
+		if exists(filepath.Join(dir, name)) {
+			t.Errorf("%s was left behind", name)
 		}
 	}
 }
 
 func TestStoreWritesEventVersionAndRefusesNewer(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "board.json")
+	path := filepath.Join(dir, "board.db")
 	st := New(path)
+	defer st.Close()
 	f, _ := st.Load()
 	f.Active().AddTask(board.Task{Title: "x"}) //nolint:errcheck // test data
 	if err := st.Save(f); err != nil {
@@ -245,20 +288,33 @@ func TestStoreWritesEventVersionAndRefusesNewer(t *testing.T) {
 	if err := st.Save(f); err != nil {
 		t.Fatal(err)
 	}
-	log, _ := os.ReadFile(st.LogPath())
-	if !strings.Contains(string(log), `"v":1`) {
-		t.Fatalf("events are not version-tagged:\n%s", log)
+	events, err := st.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.V != board.EventVersion {
+			t.Fatalf("event %d is not version-tagged: %+v", e.Seq, e)
+		}
 	}
 
-	// A future kancli appends something this build cannot read.
-	fh, _ := os.OpenFile(st.LogPath(), os.O_APPEND|os.O_WRONLY, 0o644)
-	fh.WriteString(`{"v":1,"seq":99,"at":"2030-01-01T00:00:00Z","board":"main","kind":"task.teleported","task":1}` + "\n") //nolint:errcheck // test data
-	fh.Close()
-	_, err := New(path).Load()
+	// A future kancli writes something this build cannot read.
+	db, err := st.conn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO events (`+eventColumns+`) VALUES (99, 1, ?, 'main', 'task.teleported', 1, '', '', 0, '', NULL, 'future')`,
+		formatTime(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatal(err)
+	}
+
+	next := New(path)
+	defer next.Close()
+	_, err = next.Load()
 	if !errors.Is(err, board.ErrNewerEvents) {
 		t.Fatalf("err = %v, want ErrNewerEvents", err)
 	}
-	for _, want := range []string{"task.teleported", "upgrade kancli", "event 99", st.LogPath()} {
+	for _, want := range []string{"task.teleported", "upgrade kancli", "event 99", path} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q: %v", want, err)
 		}

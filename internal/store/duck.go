@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -41,16 +40,39 @@ func SQLLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// eventFiles lists every event log file, oldest segment first.
-func (s *Store) EventFiles() []string {
+// WriteEventsFile exports the event log to a temporary JSONL file so
+// DuckDB can read it, and returns the path and a cleanup function. The
+// path is empty with a no-op cleanup when the store has nothing to export.
+func WriteEventsFile(s *Store) (string, func(), error) {
 	if !s.Enabled() {
-		return nil
+		return "", func() {}, nil
 	}
-	segs, _ := filepath.Glob(filepath.Join(s.archiveDir, "*.jsonl"))
-	if exists(s.logPath) {
-		segs = append(segs, s.logPath)
+	tmp, err := os.CreateTemp("", "kancli-events-*.jsonl")
+	if err != nil {
+		return "", nil, err
 	}
-	return segs
+	name := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	if err := s.ExportEventsJSONL(name); err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	// An empty export is no export: read_json_auto over a zero-byte file
+	// cannot bind seq, and SQLViews defines a typed empty events view when
+	// it is given no file at all.
+	info, err := os.Stat(name)
+	if err != nil {
+		os.Remove(name)
+		return "", nil, err
+	}
+	if info.Size() == 0 {
+		os.Remove(name)
+		return "", func() {}, nil
+	}
+	return name, func() { os.Remove(name) }, nil
 }
 
 // sqlViews returns SQL that defines the boards, columns, tasks, events and

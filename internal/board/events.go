@@ -35,6 +35,8 @@ const (
 	EvBoardRemoved      EventKind = "board.removed"
 	EvBoardActivated    EventKind = "board.activated"
 	EvBoardRestored     EventKind = "board.restored"
+	EvTaskReverted      EventKind = "task.reverted"  // Data: the task as it was; Apply upserts by id
+	EvBoardReverted     EventKind = "board.reverted" // Data: Board with Tasks omitted; Apply replaces everything but Tasks
 	EvLinkAdded         EventKind = "link.added"
 	EvLinkRemoved       EventKind = "link.removed"
 )
@@ -268,6 +270,7 @@ func (f *File) Apply(e Event) error {
 		}
 		if b.Task(t.ID) == nil {
 			b.Tasks = append(b.Tasks, t)
+			b.indexAppended()
 			b.touch()
 			if b.NextID <= t.ID {
 				b.NextID = t.ID + 1
@@ -323,6 +326,21 @@ func (f *File) Apply(e Event) error {
 		return ignoreNotFound(b.AddLink(e.Task, LinkKind(e.Text), e.Index))
 	case EvLinkRemoved:
 		b.RemoveLink(e.Task, LinkKind(e.Text), e.Index)
+	case EvTaskReverted:
+		var t Task
+		if err := json.Unmarshal(e.Data, &t); err != nil {
+			return err
+		}
+		b.revertTask(t, e.Index)
+	case EvBoardReverted:
+		var nb Board
+		if err := json.Unmarshal(e.Data, &nb); err != nil {
+			return err
+		}
+		// Board settings only: b.Tasks is untouched, so the id index stays
+		// valid.
+		b.Name, b.Description, b.Columns, b.NextID = nb.Name, nb.Description, nb.Columns, nb.NextID
+		b.touch()
 	case EvBoardRestored:
 		var nb Board
 		if err := json.Unmarshal(e.Data, &nb); err != nil {
@@ -330,6 +348,7 @@ func (f *File) Apply(e Event) error {
 		}
 		nb.rec, nb.clock = b.rec, prevClock
 		nb.gen = b.gen + 1
+		nb.byID = nil // a whole new task slice: rebuild on next lookup
 		*b = nb
 		b.clock = func() time.Time { return at }
 	default:
@@ -434,6 +453,10 @@ func (e Event) Describe(f *File) string {
 		return "switched to board " + e.To
 	case EvBoardRestored:
 		return "undo"
+	case EvTaskReverted:
+		return "reverted " + ref
+	case EvBoardReverted:
+		return "reverted board settings"
 	case EvLinkAdded:
 		return fmt.Sprintf("linked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
 	case EvLinkRemoved:

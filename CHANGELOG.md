@@ -29,6 +29,14 @@
 - Golden-file tests of every screen with teatest, and a property-based test
   (rapid) that replays random mutation sequences through the event log.
 
+### Changed
+
+- The board is now a single SQLite database, `board.db`. The first run
+  imports your existing `board.json` and history and moves the old files to
+  `board.backups/v2/`, printing where. Snapshot history is pruned instead of
+  kept forever, `--as-of` is indexed, and undo writes only what changed.
+  Requires nothing extra: the driver is pure Go.
+
 ### Fixed
 
 - Replayed events now reproduce the live state exactly: an event carries the
@@ -37,6 +45,8 @@
 - Deleting a column and moving its tasks to a column further right logged
   the wrong destination, so history and other processes saw the tasks in
   the wrong column. Found by the new property test.
+- Undo wrote a copy of the whole board into the history; it now records
+  only the tasks that changed.
 
 - Links between tasks: blocks / blocked by, subtask / parent, relates to.
   Blocked marker on cards and in the header, subtask progress on parents,

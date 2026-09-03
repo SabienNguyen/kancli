@@ -822,3 +822,243 @@ func TestDescribeBoard(t *testing.T) {
 		t.Fatalf("round trip: %q %v", back.Boards[0].Description, err)
 	}
 }
+
+// TestReplaceEmitsOnlyTheDifference pins undo down to change-sized events:
+// Replace records what actually changed, not a copy of the whole board, and
+// replaying those events reproduces the restored board exactly.
+func TestReplaceEmitsOnlyTheDifference(t *testing.T) {
+	f := NewFile()
+	b := f.Boards[0]
+
+	var log []Event
+	drain := func() []Event {
+		es := f.Pending()
+		log = append(log, es...)
+		return es
+	}
+
+	t1, err := b.AddTask(Task{Title: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2, err := b.AddTask(Task{Title: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id1, id2 := t1.ID, t2.ID
+	beforeJSON, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain()
+
+	edit := *b.Task(id1)
+	edit.Title = "one edited"
+	if err := b.UpdateTask(edit); err != nil {
+		t.Fatal(err)
+	}
+	if !b.DeleteTask(id2) {
+		t.Fatal("delete failed")
+	}
+	t3, err := b.AddTask(Task{Title: "three"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id3 := t3.ID
+	if _, err := b.AddColumn("Review", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	drain()
+
+	var restored Board
+	if err := json.Unmarshal(beforeJSON, &restored); err != nil {
+		t.Fatal(err)
+	}
+	b.Replace(restored)
+	events := drain()
+
+	kinds := map[EventKind]int{}
+	for _, e := range events {
+		kinds[e.Kind]++
+	}
+	if len(events) != 4 || kinds[EvTaskReverted] != 2 || kinds[EvTaskDeleted] != 1 || kinds[EvBoardReverted] != 1 {
+		t.Fatalf("events = %v (%d total), want 2 reverted, 1 deleted, 1 board.reverted", kinds, len(events))
+	}
+	for _, e := range events {
+		if e.Describe(f) == "" || e.Describe(f) == string(e.Kind) {
+			t.Errorf("event %s has no description", e.Kind)
+		}
+	}
+
+	if b.Task(id3) != nil {
+		t.Error("task added after the snapshot survived the restore")
+	}
+	if b.Task(id2) == nil {
+		t.Error("deleted task was not brought back")
+	}
+	if tk := b.Task(id1); tk == nil || tk.Title != "one" {
+		t.Errorf("task #%d = %+v, want title %q", id1, tk, "one")
+	}
+
+	// Replaying every event from the start reproduces the restored board.
+	replayed := NewFile()
+	replayed.Boards[0].ID = b.ID
+	for i := range log {
+		log[i].Seq = int64(i + 1)
+	}
+	if err := replayed.Replay(log); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	rb := replayed.Boards[0]
+	for _, field := range []struct {
+		name      string
+		got, want any
+	}{
+		{"Tasks", rb.Tasks, b.Tasks},
+		{"Columns", rb.Columns, b.Columns},
+		{"Name", rb.Name, b.Name},
+		{"Description", rb.Description, b.Description},
+		{"NextID", rb.NextID, b.NextID},
+	} {
+		got, want := string(MustJSON(field.got)), string(MustJSON(field.want))
+		if got != want {
+			t.Errorf("replayed %s:\n got %s\nwant %s", field.name, got, want)
+		}
+	}
+
+	// Restoring the state the board is already in changes nothing.
+	var same Board
+	sameJSON, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(sameJSON, &same); err != nil {
+		t.Fatal(err)
+	}
+	b.Replace(same)
+	if es := f.Pending(); len(es) != 0 {
+		t.Errorf("identical Replace emitted %d events: %v", len(es), es)
+	}
+}
+
+// TestReplaceRestoresTaskOrder covers an undo whose only difference is the
+// order of the tasks: the events must carry the order too.
+func TestReplaceRestoresTaskOrder(t *testing.T) {
+	f := NewFile()
+	b := f.Boards[0]
+	for _, title := range []string{"one", "two", "three"} {
+		if _, err := b.AddTask(Task{Title: title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var log []Event
+	log = append(log, f.Pending()...)
+
+	beforeJSON, _ := json.Marshal(b)
+	if !b.ReorderTask(b.Tasks[0].ID, 1) {
+		t.Fatal("reorder failed")
+	}
+	log = append(log, f.Pending()...)
+
+	var restored Board
+	if err := json.Unmarshal(beforeJSON, &restored); err != nil {
+		t.Fatal(err)
+	}
+	b.Replace(restored)
+	log = append(log, f.Pending()...)
+
+	replayed := NewFile()
+	replayed.Boards[0].ID = b.ID
+	for i := range log {
+		log[i].Seq = int64(i + 1)
+	}
+	if err := replayed.Replay(log); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if got, want := string(MustJSON(replayed.Boards[0].Tasks)), string(MustJSON(b.Tasks)); got != want {
+		t.Errorf("replayed tasks:\n got %s\nwant %s", got, want)
+	}
+}
+
+// TestStatsWalkerFollowsUndo checks that an undo, which now reverts single
+// tasks rather than restoring the whole board, still moves the stats back.
+func TestStatsWalkerFollowsUndo(t *testing.T) {
+	f := NewFile()
+	f.rec.actor = "test"
+	b := f.Active()
+	start := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	at := start
+	b.SetClock(func() time.Time { return at })
+
+	task, err := b.AddTask(Task{Title: "undo me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = start.Add(time.Hour)
+	if err := b.MoveTask(task.ID, "in_progress"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A copy of the board as it was before the task was finished.
+	var before Board
+	if err := json.Unmarshal(MustJSON(b), &before); err != nil {
+		t.Fatal(err)
+	}
+
+	at = start.Add(2 * time.Hour)
+	if err := b.MoveTask(task.ID, b.DoneColumn().ID); err != nil {
+		t.Fatal(err)
+	}
+	at = start.Add(3 * time.Hour)
+	b.Replace(before)
+
+	events := f.rec.drain()
+	for i := range events {
+		events[i].Seq = int64(i + 1) // the store numbers events as it appends them
+	}
+	var reverted bool
+	for _, e := range events {
+		if e.Kind == EvTaskReverted {
+			reverted = true
+		}
+	}
+	if !reverted {
+		t.Fatalf("undo emitted no %s event: %+v", EvTaskReverted, events)
+	}
+	if got := b.Task(task.ID).Column; got != "in_progress" {
+		t.Fatalf("task column after undo = %q, want in_progress", got)
+	}
+
+	now := start.Add(4 * time.Hour)
+	w := NewStatsWalker(b)
+	w.Feed(events)
+	st := w.Finish(b, now, 90)
+
+	if len(st.Finished) != 0 || st.CycleMedian != 0 || st.CycleMean != 0 {
+		t.Errorf("undone task still counts as finished: %+v (cycle %v)", st.Finished, st.CycleMedian)
+	}
+	if st.InProgress != 1 {
+		t.Errorf("in progress = %d, want 1", st.InProgress)
+	}
+	if len(st.WIP) == 0 || st.WIP[len(st.WIP)-1].Count != 1 {
+		t.Errorf("wip = %+v, want the undone task in progress", st.WIP)
+	}
+	for _, wk := range st.Weeks {
+		if wk.Done != 0 {
+			t.Errorf("week %v still counts a completion: %+v", wk.Week, wk)
+		}
+	}
+
+	// The incremental walker and a full walk must agree, as they do in the
+	// store's own incremental test.
+	full := ComputeStats(b, events, now, 90)
+	inc := NewStatsWalker(b)
+	half := len(events) / 2
+	inc.Feed(events[:half])
+	inc.Feed(events)
+	fullJSON, _ := json.Marshal(full)
+	incJSON, _ := json.Marshal(inc.Finish(b, now, 90))
+	if string(fullJSON) != string(incJSON) {
+		t.Errorf("incremental stats differ from a full walk:\n%s\n%s", incJSON, fullJSON)
+	}
+}

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/SabienNguyen/kancli/internal/board"
 	"github.com/SabienNguyen/kancli/internal/config"
-	"github.com/SabienNguyen/kancli/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -60,7 +58,7 @@ func TestEveryScreenFitsTheTerminal(t *testing.T) {
 		m = press(m, "esc", "esc", "enter", "c")
 		assertFits(t, m, "comment prompt")
 	}
-	m := New(config.Config{}, Styles{}, Glyphs{}, store.New(""), board.SampleFile())
+	m := New(config.Config{}, Styles{}, Glyphs{}, newStore(t, ""), board.SampleFile())
 	if !strings.Contains(m.View(), "Loading") {
 		t.Error("unsized app should show a loading message")
 	}
@@ -441,7 +439,7 @@ func TestColumnsAndBoards(t *testing.T) {
 func TestExternalChangesAreMerged(t *testing.T) {
 	m, st := newTestApp(t)
 	// Another process appends an event.
-	other := store.New(st.Path())
+	other := newStore(t, st.Path())
 	other.SetActor("cli")
 	f, err := other.Load()
 	if err != nil {
@@ -485,15 +483,19 @@ func TestExternalChangesAreMerged(t *testing.T) {
 		t.Error("the other process should replay the local move")
 	}
 
-	// ctrl+s writes a snapshot and archives the tail.
+	// ctrl+s folds the tail into a snapshot and keeps the history.
 	m = press(m, "ctrl+s")
 	if m.err != nil || st.TailEvents() != 0 {
 		t.Errorf("compact: err=%v tail=%d", m.err, st.TailEvents())
 	}
-	if segs, _ := filepath.Glob(filepath.Join(st.ArchiveDir(), "*.jsonl")); len(segs) == 0 {
-		t.Error("compaction should archive the tail log")
+	events, err := st.Events()
+	if err != nil {
+		t.Fatal(err)
 	}
-	f, _ = store.New(st.Path()).Load()
+	if len(events) == 0 {
+		t.Error("compaction should keep the event history")
+	}
+	f, _ = newStore(t, st.Path()).Load()
 	if f.Active().Task(1).Column != "in_progress" || f.Active().Task(10) == nil {
 		t.Error("snapshot should carry the merged state")
 	}
@@ -549,7 +551,7 @@ func TestQuitAndHelp(t *testing.T) {
 func TestDemoModeAndThemes(t *testing.T) {
 	for _, name := range ThemeNames {
 		th, _ := ThemeByName(name, name == "mono")
-		m := New(config.Config{Compact: true}, NewStyles(th, name == "mono"), NewGlyphs(name == "mono"), store.New(""), board.SampleFile())
+		m := New(config.Config{Compact: true}, NewStyles(th, name == "mono"), NewGlyphs(name == "mono"), newStore(t, ""), board.SampleFile())
 		mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 		m = mm.(App)
 		assertFits(t, m, name)
@@ -564,7 +566,7 @@ func TestDemoModeAndThemes(t *testing.T) {
 }
 
 func TestConfiguredCursorKeys(t *testing.T) {
-	st := store.New("")
+	st := newStore(t, "")
 	s, g := testStyles()
 	m := New(config.Config{Keys: map[string][]string{"down": {"w"}, "up": {"e"}, "edit": {"E"}}}, s, g, st, board.SampleFile())
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
@@ -585,7 +587,7 @@ func TestConfiguredCursorKeys(t *testing.T) {
 
 func TestStatsScreenAndRelevance(t *testing.T) {
 	s, g := testStyles()
-	st := store.New("")
+	st := newStore(t, "")
 	f := board.DemoFile()
 	if err := st.Save(f); err != nil {
 		t.Fatal(err)
@@ -652,7 +654,7 @@ func TestReadOnlyAsOfView(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, g := testStyles()
-	ro := New(config.Config{}, s, g, store.New(st.Path()), past)
+	ro := New(config.Config{}, s, g, newStore(t, st.Path()), past)
 	ro.readOnly, ro.asOf = true, board.Now().Add(-10*24*time.Hour)
 	mm, _ := ro.Update(tea.WindowSizeMsg{Width: testWidth, Height: testHeight})
 	ro = mm.(App)
@@ -676,7 +678,7 @@ func TestReadOnlyAsOfView(t *testing.T) {
 	if ro.state != stateDetail || !strings.Contains(ro.statusMsg, "Read-only") {
 		t.Error("detail view mutations should be blocked")
 	}
-	if tail := store.New(st.Path()); tail.Enabled() {
+	if tail := newStore(t, st.Path()); tail.Enabled() {
 		f2, _ := tail.Load()
 		if f2.Active().Task(1).Column != "in_progress" {
 			t.Error("the live board should be untouched by the read-only session")
@@ -697,6 +699,11 @@ func TestLinksInDetailAndCards(t *testing.T) {
 	m = press(m, "enter")
 	if m.state != stateDetail || !m.board.IsBlocked(1) {
 		t.Fatalf("link not created: state=%v blocked=%v status=%q", m.state, m.board.IsBlocked(1), m.statusMsg)
+	}
+	// The status names the other endpoint: "blocked-by 2" is stored as
+	// 2 blocks 1, so it must read "#1 is blocked by #2", not "#1 ... #1".
+	if !strings.Contains(m.statusMsg, "#2") || !strings.Contains(m.statusMsg, "is blocked by") {
+		t.Errorf("status should name the other task: %q", m.statusMsg)
 	}
 	v := m.View()
 	if !strings.Contains(v, "blocked by") || !strings.Contains(v, "#2") {
@@ -761,5 +768,30 @@ func TestDescribeBoardUndo(t *testing.T) {
 	m = press(m, "U")
 	if m.board.Description != want {
 		t.Errorf("after redo = %q, want %q", m.board.Description, want)
+	}
+}
+
+// TestSnapshotCapsUndoStackBytes checks that the undo history is bounded by
+// bytes, not just by entry count: a board big enough that a handful of
+// copies blow past the cap loses its oldest entries.
+func TestSnapshotCapsUndoStackBytes(t *testing.T) {
+	m := &App{}
+	big := 40 << 20
+	m.undoStack = []undoEntry{{board: make([]byte, big)}, {board: make([]byte, big)}}
+	m.snapshot()
+
+	large := 0
+	total := 0
+	for _, e := range m.undoStack {
+		total += len(e.board)
+		if len(e.board) == big {
+			large++
+		}
+	}
+	if large != 1 {
+		t.Errorf("large entries kept = %d, want 1", large)
+	}
+	if total > maxUndoBytes {
+		t.Errorf("undo stack holds %d bytes, want at most %d", total, maxUndoBytes)
 	}
 }

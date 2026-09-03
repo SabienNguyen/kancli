@@ -41,6 +41,7 @@ const (
 	minWidth     = 60
 	minHeight    = 18
 	maxUndo      = 100
+	maxUndoBytes = 64 << 20 // cap on the undo stack, summed over its board copies
 	pollInterval = 2 * time.Second
 )
 
@@ -269,7 +270,21 @@ func (m *App) snapshot() {
 	if len(m.undoStack) > maxUndo {
 		m.undoStack = m.undoStack[1:]
 	}
+	m.trimUndo()
 	m.redoStack = nil
+}
+
+// trimUndo drops the oldest undo entries until the stack fits in
+// maxUndoBytes, so a big board cannot grow the history without bound.
+func (m *App) trimUndo() {
+	total := 0
+	for _, e := range m.undoStack {
+		total += len(e.board)
+	}
+	for total > maxUndoBytes && len(m.undoStack) > 1 {
+		total -= len(m.undoStack[0].board)
+		m.undoStack = m.undoStack[1:]
+	}
 }
 
 // dropSnapshot discards the most recent snapshot after a no-op.
@@ -584,10 +599,14 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m App) quit() (tea.Model, tea.Cmd) {
 	m.quitting = true
 	if !m.readOnly && m.store.Enabled() && m.store.TailEvents() > 0 {
-		// Fold the tail into a fresh snapshot so board.json is current.
+		// Fold the tail into a fresh snapshot so the stored state is current.
 		if _, err := m.writeSnapshot(); err != nil {
 			m.err = err
 		}
+	}
+	// Closing checkpoints the write-ahead log, so board.db stands alone.
+	if err := m.store.Close(); err != nil && m.err == nil {
+		m.err = err
 	}
 	return m, tea.Quit
 }
@@ -1331,7 +1350,14 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 			return m, m.setStatus("%v", err)
 		}
 		m.renderDetail()
-		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), to)
+		// parseLinkInput normalises the inverse kinds, so "blocked-by #2"
+		// typed on task 1 is stored as 2 blocks 1. Name whichever endpoint
+		// is not the task the prompt was opened on, never ref twice.
+		other := to
+		if from != msg.ref {
+			other = from
+		}
+		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), other)
 	case promptAttachment:
 		if text == "" {
 			m.renderDetail()
@@ -1661,19 +1687,26 @@ func (m App) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, s)
 	}
 	// Dialogs keep a one-line status strip at the bottom so messages and
-	// errors stay visible.
+	// errors stay visible. The strip takes a row away from the dialog, so
+	// the ones that fill the terminal are re-sized to what is left before
+	// they render; otherwise a status message pushes the view one line
+	// past the bottom of the screen.
+	var note string
+	switch {
+	case m.err != nil:
+		note = m.st.err.Render(m.err.Error())
+	case m.statusMsg != "":
+		note = m.st.success.Render(m.statusMsg)
+	}
+	bodyHeight := m.height
+	if note != "" {
+		bodyHeight--
+	}
 	dialog := func(s string) string {
-		var note string
-		switch {
-		case m.err != nil:
-			note = m.st.err.Render(m.err.Error())
-		case m.statusMsg != "":
-			note = m.st.success.Render(m.statusMsg)
-		}
 		if note == "" {
 			return center(s)
 		}
-		body := lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, s)
+		body := lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Center, s)
 		return lipgloss.JoinVertical(lipgloss.Left, body, lipgloss.NewStyle().MaxWidth(m.width).Render(" "+note))
 	}
 	switch m.state {
@@ -1686,8 +1719,10 @@ func (m App) View() string {
 	case stateConfirm:
 		return dialog(m.confirm.View())
 	case stateDetail:
+		m.detail.setSize(m.width, bodyHeight)
 		return dialog(m.detail.view())
 	case stateStats:
+		m.stats.setSize(m.width, bodyHeight)
 		return dialog(m.stats.view())
 	case statePicker:
 		return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.pick.view())
