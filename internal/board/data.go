@@ -38,15 +38,31 @@ type Board struct {
 	// it emits carries exactly the time written into the task.
 	stamp time.Time
 
-	// byID maps task id to position in Tasks. It is rebuilt whenever gen
-	// changes; mutations bump gen with touch().
-	byID    map[int]int
-	byIDGen uint64
-	gen     uint64
+	// byID maps task id to position in Tasks. It survives mutations that
+	// only edit task fields; anything that reorders, removes or rewrites
+	// the slice clears it with invalidateIndex, and a plain append keeps it
+	// current with indexAppended. A nil map means "rebuild on next lookup".
+	byID map[int]int
+	gen  uint64
 }
 
-// touch marks the task slice as changed so the id index is rebuilt.
+// touch marks the board as changed. It is the generation counter mutations
+// bump; it deliberately says nothing about the id index, which is kept
+// valid across field edits and appends.
 func (b *Board) touch() { b.gen++ }
+
+// invalidateIndex drops the id index, so the next lookup rebuilds it. Call
+// it from every mutation that moves tasks between positions, removes one,
+// or replaces the slice wholesale.
+func (b *Board) invalidateIndex() { b.byID = nil }
+
+// indexAppended records the task just appended to b.Tasks. It is a no-op
+// when the index is not currently valid, which the next lookup repairs.
+func (b *Board) indexAppended() {
+	if b.byID != nil {
+		b.byID[b.Tasks[len(b.Tasks)-1].ID] = len(b.Tasks) - 1
+	}
+}
 
 // reindex rebuilds the id index.
 func (b *Board) reindex() {
@@ -54,7 +70,6 @@ func (b *Board) reindex() {
 	for i := range b.Tasks {
 		b.byID[b.Tasks[i].ID] = i
 	}
-	b.byIDGen = b.gen
 }
 
 // Column is one lane on a board. The last column is treated as "done".
@@ -419,7 +434,7 @@ func (b *Board) Task(id int) *Task {
 // taskIndex returns the position of a task, using the id index. The index
 // is verified against the slice so direct edits to Tasks stay safe.
 func (b *Board) taskIndex(id int) int {
-	if b.byID == nil || b.byIDGen != b.gen || len(b.byID) != len(b.Tasks) {
+	if b.byID == nil || len(b.byID) != len(b.Tasks) {
 		b.reindex()
 	}
 	if i, ok := b.byID[id]; ok {
@@ -529,6 +544,7 @@ func (b *Board) AddTask(t Task) (*Task, error) {
 	t.History = nil
 	t.logAt(now, "Created in %s", col.Name)
 	b.Tasks = append(b.Tasks, t)
+	b.indexAppended()
 	b.touch()
 	added := &b.Tasks[len(b.Tasks)-1]
 	added.Links = nil // links are only ever created through AddLink
@@ -615,6 +631,7 @@ func (b *Board) MoveTask(id int, colID string) error {
 	}
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, t)
+	b.invalidateIndex()
 	b.touch()
 	b.emit(Event{Kind: EvTaskMoved, Task: t.ID, From: fromID, To: col.ID})
 	return nil
@@ -634,6 +651,7 @@ func (b *Board) ReorderTask(id int, delta int) bool {
 	for j := i + step; j >= 0 && j < len(b.Tasks); j += step {
 		if b.Tasks[j].Column == b.Tasks[i].Column && !b.Tasks[j].Archived() {
 			b.Tasks[i], b.Tasks[j] = b.Tasks[j], b.Tasks[i]
+			b.invalidateIndex()
 			b.touch()
 			b.emit(Event{Kind: EvTaskReordered, Task: id, Index: step})
 			return true
@@ -655,6 +673,7 @@ func (b *Board) DeleteTask(id int) bool {
 		// replayed board matches a restored copy byte for byte.
 		b.Tasks = nil
 	}
+	b.invalidateIndex()
 	b.touch()
 	b.dropLinksTo(id)
 	b.emit(Event{Kind: EvTaskDeleted, Task: id, From: col})
@@ -692,6 +711,7 @@ func (b *Board) RestoreTask(id int) bool {
 	tt := b.Tasks[i]
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
 	b.Tasks = append(b.Tasks, tt)
+	b.invalidateIndex()
 	b.touch()
 	b.emit(Event{Kind: EvTaskRestored, Task: id, To: tt.Column})
 	return true
@@ -896,6 +916,7 @@ func (b *Board) RemoveColumn(id, moveTo string) error {
 		kept = append(kept, t)
 	}
 	b.Tasks = kept
+	b.invalidateIndex()
 	b.touch()
 	b.Columns = append(b.Columns[:i], b.Columns[i+1:]...)
 	b.emit(Event{Kind: EvColumnRemoved, From: id, To: to})
@@ -922,7 +943,8 @@ func (b *Board) Replace(nb Board) {
 	rec, clock, gen := b.rec, b.clock, b.gen
 	*b = nb
 	b.rec, b.clock = rec, clock
-	b.byID, b.gen = nil, gen+1
+	b.gen = gen + 1
+	b.invalidateIndex()
 	for _, e := range events {
 		b.emit(e)
 	}
@@ -981,6 +1003,7 @@ func (b *Board) revertTask(t Task, index int) {
 	b.Tasks = append(b.Tasks, Task{})
 	copy(b.Tasks[index+1:], b.Tasks[index:])
 	b.Tasks[index] = t
+	b.invalidateIndex()
 	b.touch()
 }
 

@@ -270,6 +270,7 @@ func (f *File) Apply(e Event) error {
 		}
 		if b.Task(t.ID) == nil {
 			b.Tasks = append(b.Tasks, t)
+			b.indexAppended()
 			b.touch()
 			if b.NextID <= t.ID {
 				b.NextID = t.ID + 1
@@ -336,6 +337,8 @@ func (f *File) Apply(e Event) error {
 		if err := json.Unmarshal(e.Data, &nb); err != nil {
 			return err
 		}
+		// Board settings only: b.Tasks is untouched, so the id index stays
+		// valid.
 		b.Name, b.Description, b.Columns, b.NextID = nb.Name, nb.Description, nb.Columns, nb.NextID
 		b.touch()
 	case EvBoardRestored:
@@ -345,6 +348,7 @@ func (f *File) Apply(e Event) error {
 		}
 		nb.rec, nb.clock = b.rec, prevClock
 		nb.gen = b.gen + 1
+		nb.byID = nil // a whole new task slice: rebuild on next lookup
 		*b = nb
 		b.clock = func() time.Time { return at }
 	default:

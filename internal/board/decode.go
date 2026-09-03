@@ -135,6 +135,8 @@ func normalizeBoard(b *Board) {
 	if b.NextID <= maxID {
 		b.NextID = maxID + 1
 	}
+	// Task ids may have been reassigned above, so the index is stale.
+	b.invalidateIndex()
 	b.touch()
 }
 
