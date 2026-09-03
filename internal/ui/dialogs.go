@@ -25,6 +25,7 @@ const (
 	promptChecklistItem
 	promptAttachment
 	promptLink
+	promptDescribeBoard
 )
 
 // promptSubmitMsg carries the text entered into a prompt.
@@ -50,6 +51,9 @@ func newPrompt(kind promptKind, title, initial string, st Styles) prompt {
 	ti.Prompt = "› "
 	ti.PromptStyle = st.searchPrompt
 	ti.CharLimit = 500
+	if kind == promptDescribeBoard {
+		ti.CharLimit = 0 // descriptions may be long; never silently truncate
+	}
 	ti.Width = 60
 	ti.PlaceholderStyle = st.muted
 	ti.SetValue(initial)
@@ -209,7 +213,7 @@ func (p picker) update(msg tea.Msg) (picker, tea.Cmd) {
 func (p picker) view() string {
 	var bindings []key.Binding
 	if p.kind == pickerBoards {
-		bindings = []key.Binding{p.keys.Select, p.keys.New, p.keys.Rename, p.keys.Delete, p.keys.Back}
+		bindings = []key.Binding{p.keys.Select, p.keys.New, p.keys.Rename, p.keys.Describe, p.keys.Delete, p.keys.Back}
 	} else {
 		bindings = []key.Binding{p.keys.Restore, p.keys.Delete, p.keys.Back}
 	}
@@ -226,6 +230,9 @@ func boardItems(f *board.File) []pickItem {
 		desc := fmt.Sprintf("%d task%s, %d column%s", live, board.Plural(live), len(b.Columns), board.Plural(len(b.Columns)))
 		if b.ID == f.ActiveBoard {
 			desc += " (current)"
+		}
+		if b.Description != "" {
+			desc += " · " + b.Description
 		}
 		items = append(items, pickItem{id: b.ID, title: b.Name, desc: desc})
 	}

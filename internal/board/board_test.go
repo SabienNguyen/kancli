@@ -766,3 +766,59 @@ func TestReplayRefusesNewerEvents(t *testing.T) {
 		t.Error("v-tagged delete was not applied")
 	}
 }
+
+func TestDescribeBoard(t *testing.T) {
+	f := NewFile()
+	f.Attach()
+	b := f.Boards[0]
+	if err := f.DescribeBoard(b.ID, "  Client work  "); err != nil || b.Description != "Client work" {
+		t.Fatalf("describe: %q %v", b.Description, err)
+	}
+	if err := f.DescribeBoard("nope", "x"); err == nil {
+		t.Error("unknown board should fail")
+	}
+	events := f.Pending()
+	if len(events) != 1 || events[0].Kind != EvBoardDescribed || events[0].Text != "Client work" || events[0].Board != b.ID {
+		t.Fatalf("events = %+v", events)
+	}
+	if s := events[0].Describe(f); !strings.Contains(s, "Client work") {
+		t.Errorf("Describe = %q", s)
+	}
+	// Replay reproduces it, and clearing works.
+	fresh := NewFile()
+	fresh.Boards[0].ID = b.ID
+	if err := fresh.Replay(events); err != nil || fresh.Boards[0].Description != "Client work" {
+		t.Fatalf("replay: %q %v", fresh.Boards[0].Description, err)
+	}
+	// Describing with the same text again is a no-op: no second event.
+	if err := f.DescribeBoard(b.ID, "Client work"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Pending(); len(got) != 0 {
+		t.Errorf("re-describing with the same text emitted %+v", got)
+	}
+	// Newlines and runs of whitespace collapse to one line.
+	if err := f.DescribeBoard(b.ID, "line one\n\tline  two"); err != nil || b.Description != "line one line two" {
+		t.Fatalf("normalize: %q %v", b.Description, err)
+	}
+	if err := f.DescribeBoard(b.ID, ""); err != nil || b.Description != "" {
+		t.Fatalf("clear: %q %v", b.Description, err)
+	}
+	// A whitespace-only description of a fresh board normalizes to "" and
+	// so changes nothing and emits nothing.
+	blank := NewFile()
+	blank.Attach()
+	if err := blank.DescribeBoard(blank.Boards[0].ID, "   "); err != nil {
+		t.Fatal(err)
+	}
+	if got := blank.Pending(); len(got) != 0 {
+		t.Errorf("whitespace-only describe emitted %+v", got)
+	}
+	// Survives a JSON round trip of the file.
+	f.DescribeBoard(b.ID, "again") //nolint:errcheck // test data
+	data, _ := json.Marshal(f)
+	back, err := Decode(data)
+	if err != nil || back.Boards[0].Description != "again" {
+		t.Fatalf("round trip: %q %v", back.Boards[0].Description, err)
+	}
+}

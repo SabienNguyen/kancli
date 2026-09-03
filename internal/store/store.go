@@ -2,10 +2,12 @@ package store
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -387,7 +389,9 @@ func replayError(path string, err error) error {
 // --- events ------------------------------------------------------------------
 
 // readEventFile parses a JSONL file. A torn last line (from a crash mid
-// write) is dropped; any other damage is an error.
+// write) is dropped; any other damage is an error. Line lengths are counted
+// in real bytes, so a log with CRLF endings is measured accurately and the
+// caller never truncates at the wrong offset.
 func readEventFile(path string) ([]board.Event, int64, error) {
 	fh, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -397,41 +401,80 @@ func readEventFile(path string) ([]board.Event, int64, error) {
 		return nil, 0, err
 	}
 	defer fh.Close()
-	info, err := fh.Stat()
-	if err != nil {
-		return nil, 0, err
-	}
-	sc := bufio.NewScanner(fh)
-	sc.Buffer(make([]byte, 0, 64<<10), maxEventLine)
+	rd := bufio.NewReaderSize(fh, 64<<10)
 	var events []board.Event
 	var consumed int64
-	var pendingErr error
-	for sc.Scan() {
-		line := sc.Bytes()
-		lineLen := int64(len(line)) + 1
-		if len(strings.TrimSpace(string(line))) == 0 {
-			consumed += lineLen
+	for {
+		raw, err := readEventLine(rd)
+		if errors.Is(err, errEventLineTooLong) {
+			return nil, 0, fmt.Errorf("%s: bad event line after seq %d: %w", path, lastSeq(events), err)
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, 0, err
+		}
+		atEOF := errors.Is(err, io.EOF)
+		if len(raw) == 0 {
+			break // nothing left to read
+		}
+		// The terminator counts towards the line, but not towards the JSON.
+		line := bytes.TrimSpace(raw)
+		if len(line) == 0 {
+			consumed += int64(len(raw)) // a blank line is skipped but counted
+			if atEOF {
+				break
+			}
 			continue
 		}
 		var e board.Event
-		if err := json.Unmarshal(line, &e); err != nil {
-			pendingErr = fmt.Errorf("%s: bad event line after seq %d: %w", path, lastSeq(events), err)
-			break
+		if jerr := json.Unmarshal(line, &e); jerr != nil {
+			if atEOF || isLastLine(rd) {
+				// A torn tail: leave it unconsumed so the caller truncates.
+				break
+			}
+			return nil, 0, fmt.Errorf("%s: bad event line after seq %d: %w", path, lastSeq(events), jerr)
 		}
 		events = append(events, e)
-		consumed += lineLen
-	}
-	if err := sc.Err(); err != nil {
-		return nil, 0, err
-	}
-	if pendingErr != nil && consumed+int64(len(sc.Bytes()))+1 < info.Size() {
-		// Damage in the middle of the file, not just a torn tail.
-		return nil, 0, pendingErr
-	}
-	if consumed > info.Size() {
-		consumed = info.Size()
+		consumed += int64(len(raw))
+		if atEOF {
+			break
+		}
 	}
 	return events, consumed, nil
+}
+
+// isLastLine reports whether the reader is exhausted, so the line just read
+// was the file's last one.
+func isLastLine(rd *bufio.Reader) bool {
+	_, err := rd.Peek(1)
+	return errors.Is(err, io.EOF)
+}
+
+// errEventLineTooLong reports a line past maxEventLine, which means the log
+// is damaged rather than merely large.
+var errEventLineTooLong = fmt.Errorf("event line exceeds %d bytes", maxEventLine)
+
+// readEventLine returns one line including its terminator, or io.EOF along
+// with the final unterminated line. The returned slice is only valid until
+// the next read.
+func readEventLine(rd *bufio.Reader) ([]byte, error) {
+	var buf []byte
+	for {
+		frag, err := rd.ReadSlice('\n')
+		if len(buf) == 0 && !errors.Is(err, bufio.ErrBufferFull) {
+			if len(frag) > maxEventLine {
+				return frag, errEventLineTooLong
+			}
+			return frag, err
+		}
+		buf = append(buf, frag...)
+		if len(buf) > maxEventLine {
+			return buf, errEventLineTooLong
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return buf, err
+	}
 }
 
 func lastSeq(events []board.Event) int64 {

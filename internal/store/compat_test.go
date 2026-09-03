@@ -17,18 +17,25 @@ import (
 // format version; never edit an existing fixture.
 func TestLoadsEveryReleasedFormat(t *testing.T) {
 	cases := []struct {
+		name     string
 		dir      string
 		titles   []string // active board, in Tasks order
 		columns  []string // column of each task, same order
 		comments int      // comments on the last task
+		crlf     bool     // rewrite the event logs with CRLF endings first
 	}{
-		{"v1", []string{"buy milk", "write code", "stay cool"}, []string{"todo", "in_progress", "done"}, 0},
-		{"v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1},
+		{"v1", "v1", []string{"buy milk", "write code", "stay cool"}, []string{"todo", "in_progress", "done"}, 0, false},
+		{"v2", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, false},
+		// A Windows checkout (or an editor) can turn the log into CRLF.
+		{"v2-crlf", "v2", []string{"write code", "buy milk"}, []string{"in_progress", "in_progress"}, 1, true},
 	}
 	for _, c := range cases {
-		t.Run(c.dir, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			copyTree(t, filepath.Join("testdata", c.dir), dir)
+			if c.crlf {
+				toCRLF(t, dir)
+			}
 			path := filepath.Join(dir, "board.json")
 
 			st := New(path)
@@ -97,6 +104,62 @@ func copyTree(t *testing.T, src, dst string) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// toCRLF rewrites every .jsonl under dir with CRLF line endings, the way a
+// Windows checkout would.
+func toCRLF(t *testing.T, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(p) != ".jsonl" {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		lf := strings.ReplaceAll(string(data), "\r\n", "\n")
+		return os.WriteFile(p, []byte(strings.ReplaceAll(lf, "\n", "\r\n")), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadEventFileCRLF(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "board.events.jsonl")
+	data := []byte(`{"v":1,"seq":1,"at":"2026-01-01T00:00:00Z","board":"main","kind":"task.added","task":1}` + "\r\n" +
+		`{"v":1,"seq":2,"at":"2026-01-01T00:01:00Z","board":"main","kind":"task.moved","task":1}` + "\r\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events, consumed, err := readEventFile(path)
+	if err != nil {
+		t.Fatalf("readEventFile: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	if consumed != int64(len(data)) {
+		t.Errorf("consumed = %d, want %d (the whole file)", consumed, len(data))
+	}
+
+	// A torn last line is reported by leaving it unconsumed.
+	torn := append(append([]byte(nil), data...), []byte(`{"seq":3,"kind":"task.moved"`)...)
+	if err := os.WriteFile(path, torn, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events, consumed, err = readEventFile(path)
+	if err != nil {
+		t.Fatalf("readEventFile with a torn tail: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	if consumed != int64(len(data)) {
+		t.Errorf("consumed = %d, want %d (the torn line's start)", consumed, len(data))
 	}
 }
 

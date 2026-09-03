@@ -31,6 +31,7 @@ const (
 	EvColumnMoved       EventKind = "column.moved"
 	EvBoardAdded        EventKind = "board.added"
 	EvBoardRenamed      EventKind = "board.renamed"
+	EvBoardDescribed    EventKind = "board.described"
 	EvBoardRemoved      EventKind = "board.removed"
 	EvBoardActivated    EventKind = "board.activated"
 	EvBoardRestored     EventKind = "board.restored"
@@ -236,6 +237,11 @@ func (f *File) Apply(e Event) error {
 			b.Name = e.Text
 		}
 		return nil
+	case EvBoardDescribed:
+		if b := f.Board(e.Board); b != nil {
+			b.Description = e.Text
+		}
+		return nil
 	case EvBoardRemoved:
 		return ignoreNotFound(f.RemoveBoard(e.Board))
 	case EvBoardActivated:
@@ -417,6 +423,11 @@ func (e Event) Describe(f *File) string {
 		return fmt.Sprintf("created board %q", b.Name)
 	case EvBoardRenamed:
 		return fmt.Sprintf("renamed board to %q", e.Text)
+	case EvBoardDescribed:
+		if e.Text == "" {
+			return "cleared the board description"
+		}
+		return fmt.Sprintf("described board: %q", e.Text)
 	case EvBoardRemoved:
 		return "deleted board " + e.Board
 	case EvBoardActivated:

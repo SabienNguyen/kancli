@@ -213,22 +213,23 @@ var confirmKeys = confirmKeyMap{
 
 // pickerKeyMap holds the board picker / archive list bindings.
 type pickerKeyMap struct {
-	Select, New, Rename, Delete, Restore, Back key.Binding
+	Select, New, Rename, Describe, Delete, Restore, Back key.Binding
 }
 
 func (k pickerKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Select, k.New, k.Rename, k.Delete, k.Back}
+	return []key.Binding{k.Select, k.New, k.Rename, k.Describe, k.Delete, k.Back}
 }
 
 func (k pickerKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Select, k.New, k.Rename}, {k.Delete, k.Restore, k.Back}}
+	return [][]key.Binding{{k.Select, k.New, k.Rename, k.Describe}, {k.Delete, k.Restore, k.Back}}
 }
 
 var pickerKeys = pickerKeyMap{
-	Select:  bind("enter", "open", "enter"),
-	New:     bind("n", "new board", "n"),
-	Rename:  bind("r", "rename", "r"),
-	Delete:  bind("d", "delete", "d"),
-	Restore: bind("enter", "restore", "enter"),
-	Back:    bind("esc", "back", "esc", "q"),
+	Select:   bind("enter", "open", "enter"),
+	New:      bind("n", "new board", "n"),
+	Rename:   bind("r", "rename", "r"),
+	Describe: bind("e", "describe", "e"),
+	Delete:   bind("d", "delete", "d"),
+	Restore:  bind("enter", "restore", "enter"),
+	Back:     bind("esc", "back", "esc", "q"),
 }

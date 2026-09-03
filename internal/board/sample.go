@@ -11,6 +11,7 @@ func SampleFile() *File {
 	f := NewFile()
 	b := f.Boards[0]
 	b.Name = "Demo"
+	b.Description = "Sample board with three weeks of history"
 	b.ID = "demo"
 	f.ActiveBoard = "demo"
 	b.Columns[1].WIPLimit = 2
