@@ -488,14 +488,15 @@ func TestGoToForeignLink(t *testing.T) {
 }
 
 // TestLinkPromptAcceptsBoardRefs links a ticket to a goal on another board
-// from the link prompt, in both directions.
+// through the picker, in both directions.
 func TestLinkPromptAcceptsBoardRefs(t *testing.T) {
 	m, _ := newTestApp(t)
 	mm, _ := m.openDetail(3)
 	m = mm.(App)
+	// Search, take the goal, then "subtask of" (the third relation).
 	m = press(m, "l")
-	m = typeText(m, "subtask-of roadmap#2")
-	m = press(m, "enter")
+	m = typeText(m, "grow")
+	m = press(m, "enter", "j", "j", "enter")
 	if p := m.board.Parent(3); p == nil || p.Title != "Grow the docs" {
 		t.Fatalf("the goal should be the parent, got %+v (status %q)", p, m.statusMsg)
 	}
@@ -505,10 +506,10 @@ func TestLinkPromptAcceptsBoardRefs(t *testing.T) {
 	if !strings.Contains(m.View(), "subtask of roadmap#2") {
 		t.Error("the detail view should name the foreign parent")
 	}
-	// An inverse word stores the link on the other board.
+	// An inverse relation stores the link on the other board.
 	m = press(m, "l")
-	m = typeText(m, "blocked-by roadmap#1")
-	m = press(m, "enter")
+	m = typeText(m, "ship 1")
+	m = press(m, "enter", "enter")
 	if !m.board.IsBlocked(3) {
 		t.Fatalf("the goal should block #3 (status %q)", m.statusMsg)
 	}
@@ -804,13 +805,13 @@ func TestLinksInDetailAndCards(t *testing.T) {
 	m, _ := newTestApp(t)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 180, Height: 40})
 	m = mm.(App)
-	// #2 blocks #1 via the prompt.
+	// #2 blocks #1 through the picker: search, take the row, "blocked by".
 	m = press(m, "enter", "l")
-	if m.state != statePrompt {
-		t.Fatal("l should open the link prompt")
+	if m.state != statePicker || m.pick.kind != pickerLinkTarget {
+		t.Fatal("l should open the link picker")
 	}
-	m = typeText(m, "blocked-by 2")
-	m = press(m, "enter")
+	m = typeText(m, "flaky")
+	m = press(m, "enter", "enter")
 	if m.state != stateDetail || !m.board.IsBlocked(1) {
 		t.Fatalf("link not created: state=%v blocked=%v status=%q", m.state, m.board.IsBlocked(1), m.statusMsg)
 	}
@@ -822,13 +823,6 @@ func TestLinksInDetailAndCards(t *testing.T) {
 	v := m.View()
 	if !strings.Contains(v, "blocked by") || !strings.Contains(v, "#2") {
 		t.Error("detail view should list the blocker")
-	}
-	// Bad input is reported, not applied.
-	m = press(m, "l")
-	m = typeText(m, "hates 2")
-	m = press(m, "enter")
-	if !strings.Contains(m.statusMsg, "unknown link kind") {
-		t.Errorf("status = %q", m.statusMsg)
 	}
 	// Jump to the linked task and back.
 	m = press(m, "g")
@@ -851,10 +845,10 @@ func TestLinksInDetailAndCards(t *testing.T) {
 	if m.board.IsBlocked(1) {
 		t.Errorf("X on the link row should unlink; status=%q", m.statusMsg)
 	}
-	// Subtask progress on the parent card, via the prompt on #2.
+	// Subtask progress on the parent card, via the picker on #2.
 	m = press(m, "esc", "j", "enter", "l")
-	m = typeText(m, "subtask-of 3")
-	m = press(m, "enter", "esc")
+	m = typeText(m, "milk")
+	m = press(m, "enter", "j", "j", "enter", "esc")
 	if !strings.Contains(m.View(), "0/1 subtask") || !strings.Contains(m.View(), m.g.subtask+" #3") {
 		t.Error("cards should show subtask progress and parent")
 	}
@@ -987,8 +981,8 @@ func TestForeignLinkIsNotUndoable(t *testing.T) {
 	m = mm.(App)
 	undo := len(m.undoStack)
 	m = press(m, "l")
-	m = typeText(m, "blocked-by roadmap#1")
-	m = press(m, "enter")
+	m = typeText(m, "ship 1")
+	m = press(m, "enter", "enter")
 	if !m.board.IsBlocked(3) {
 		t.Fatalf("the goal should block #3 (status %q)", m.statusMsg)
 	}
@@ -1057,5 +1051,113 @@ func TestColumnFormBorderFollowsPickedColour(t *testing.T) {
 	}
 	if strings.Contains(v, first) {
 		t.Errorf("view still uses the previous colour %q:\n%s", board.ColumnPalette[0], v)
+	}
+}
+
+// TestLinkPickerSearchesAcrossBoards links a ticket through the two-step
+// picker: a fuzzy search over every board, then the relation.
+func TestLinkPickerSearchesAcrossBoards(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.openDetail(3)
+	m = mm.(App)
+	m = press(m, "l")
+	if m.state != statePicker || m.pick.kind != pickerLinkTarget {
+		t.Fatalf("l should open the link picker: state=%v kind=%v", m.state, m.pick.kind)
+	}
+	if !m.pick.filtering() {
+		t.Fatal("the picker should be filtering the moment it opens")
+	}
+	m = typeText(m, "ship")
+	rows := map[string]string{}
+	for _, it := range m.pick.list.VisibleItems() {
+		p := it.(pickItem)
+		rows[p.id] = p.title
+	}
+	if rows["#5"] != "Ship the CLI subcommands" || rows["roadmap#1"] != "Ship 1.0" {
+		t.Fatalf(`"ship" should match both boards, matched %v`, rows)
+	}
+	if _, ok := rows["#3"]; ok {
+		t.Error("the task being linked should not be offered as a target")
+	}
+	want, ok := m.pick.selected()
+	if !ok {
+		t.Fatal("nothing is highlighted")
+	}
+	// A single enter accepts the filter and takes the highlighted row.
+	m = press(m, "enter")
+	if m.state != statePicker || m.pick.kind != pickerLinkKind {
+		t.Fatalf("enter should open the relation picker: state=%v kind=%v", m.state, m.pick.kind)
+	}
+	// blocked by, blocks, subtask of, parent of, relates to.
+	m = press(m, "j", "down", "enter")
+	if m.state != stateDetail {
+		t.Fatalf("picking a relation should return to the task view, state=%v", m.state)
+	}
+	ref, err := board.ParseRef(want.id, m.board, m.file)
+	if err != nil {
+		t.Fatalf("ParseRef(%q): %v", want.id, err)
+	}
+	links := m.file.Board("demo").Task(3).Links
+	found := false
+	for _, l := range links {
+		if l.Kind == board.LinkSubtaskOf && l.Task == ref.ID && l.Board == ref.Board {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("demo #3 should be a subtask of %s, links %+v (status %q)", want.id, links, m.statusMsg)
+	}
+	if !strings.Contains(m.statusMsg, "is a subtask of "+want.id) {
+		t.Errorf("status = %q, want it to name %s", m.statusMsg, want.id)
+	}
+}
+
+// TestLinkPickerBareRefOnThisBoard links to a task on the current board,
+// whose rows are written as a bare "#N".
+func TestLinkPickerBareRefOnThisBoard(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.openDetail(1)
+	m = mm.(App)
+	m = press(m, "l")
+	m = typeText(m, "milk")
+	it, ok := m.pick.selected()
+	if !ok || it.id != "#3" {
+		t.Fatalf("the highlighted row should be the bare #3, got %+v", it)
+	}
+	// enter takes the row, then "blocked by" is the first relation.
+	m = press(m, "enter", "enter")
+	if m.state != stateDetail || !m.board.IsBlocked(1) {
+		t.Fatalf("#3 should block #1: state=%v status=%q", m.state, m.statusMsg)
+	}
+	if !strings.Contains(m.statusMsg, "is blocked by #3") {
+		t.Errorf("status = %q", m.statusMsg)
+	}
+}
+
+// TestLinkPickerEscCancels: esc leaves the search without linking, and esc
+// on the relation step goes back to the search with a cleared filter.
+func TestLinkPickerEscCancels(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.openDetail(3)
+	m = mm.(App)
+	m = press(m, "l", "esc")
+	if m.state != stateDetail {
+		t.Fatalf("esc should go back to the task view, state=%v", m.state)
+	}
+	if n := len(m.board.Task(3).Links); n != 0 {
+		t.Fatalf("esc linked %d task(s)", n)
+	}
+	// Back out of the relation step: the search opens again, unfiltered.
+	m = press(m, "l")
+	m = typeText(m, "offsite")
+	m = press(m, "enter", "esc")
+	if m.state != statePicker || m.pick.kind != pickerLinkTarget {
+		t.Fatalf("esc should go back to the search: state=%v kind=%v", m.state, m.pick.kind)
+	}
+	if m.pick.list.FilterValue() != "" {
+		t.Errorf("the filter should be cleared, got %q", m.pick.list.FilterValue())
+	}
+	if n := len(m.board.Task(3).Links); n != 0 {
+		t.Fatalf("backing out linked %d task(s)", n)
 	}
 }

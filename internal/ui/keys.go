@@ -227,6 +227,7 @@ var confirmKeys = confirmKeyMap{
 // pickerKeyMap holds the board picker / archive list bindings.
 type pickerKeyMap struct {
 	Select, New, Rename, Describe, Kind, Delete, Restore, Back key.Binding
+	Choose                                                     key.Binding
 }
 
 func (k pickerKeyMap) ShortHelp() []key.Binding {
@@ -245,5 +246,6 @@ var pickerKeys = pickerKeyMap{
 	Kind:     bind("t", "toggle goals", "t"), // not k: the list reads k as cursor up
 	Delete:   bind("d", "delete", "d"),
 	Restore:  bind("enter", "restore", "enter"),
+	Choose:   bind("enter", "choose", "enter"),
 	Back:     bind("esc", "back", "esc", "q"),
 }

@@ -177,7 +177,9 @@ what it parsed to.
 In the **task view**, `tab` steps through checklist items, attachments and
 links, `space` toggles a checklist item, `X` removes the item or link under
 the cursor, `t` adds a checklist item, `c` adds a comment, `A` attaches a
-link or path, `o` opens the attachment, `l` links another task, `g` jumps
+link or path, `o` opens the attachment, `l` links another task (type to
+search every board, `enter` takes the highlighted one, then pick how the
+two relate), `g` jumps
 to the linked task under the cursor (switching boards if it lives on
 another one), `e` edits, `H`/`L` move the task, `a`
 archives, `d` deletes and `esc` goes back. The page also lists similar
@@ -187,14 +189,18 @@ tasks and the task's full activity.
 
 Tasks can point at each other in three ways:
 
-| You type (`l` in the task view, or `kancli link A <kind> B`) | Meaning |
+| Relation (`l` in the task view, or `kancli link A <kind> B`) | Meaning |
 | --- | --- |
 | `blocks 15` / `blocked-by 15` | this task blocks #15 / is blocked by #15 |
 | `subtask-of 3` / `parent-of 7` | this task is a subtask of #3 / #7 is its subtask |
 | `relates 9` | related, no direction |
 
-The other task can live on another board: write it `work#12` (board id or
-name, case insensitive) instead of `12`. See [Goals](#goals).
+`l` asks in two steps and never needs a number typed out: a search over
+every task on every board — type any part of the number, board or title,
+`enter` takes the highlighted row, `esc` backs out — and then the relation,
+picked from the same five words. The command line still takes them written
+out, and the other task can live on another board, written `work#12` (board
+id or name, case insensitive). See [Goals](#goals).
 
 A task with an unfinished blocker shows a blocked marker on its card and in
 the header count; the blocker is finished once it reaches the last column
@@ -260,10 +266,12 @@ kancli link roadmap#3 parent-of work#12  # the same link, from the goal
 kancli unlink roadmap#3 work#12
 ```
 
-`work#12` is accepted everywhere a task is referred to by number: the `l`
-link prompt in the task view, `kancli link` and `kancli unlink`, `#`
-mentions in descriptions and comments (which link automatically, as always),
-and the `blocks:`, `blockedby:` and `parent:` search filters.
+`work#12` is accepted everywhere a task is referred to by number: `kancli
+link` and `kancli unlink`, `#` mentions in descriptions and comments (which
+link automatically, as always), and the `blocks:`, `blockedby:` and
+`parent:` search filters. The `l` picker in the task view lists the other
+boards' tasks alongside this board's, each labelled `work#12`, and matches
+the board name as you type.
 
 What you see:
 

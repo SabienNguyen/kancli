@@ -6,7 +6,7 @@
 
 - Goal boards: mark a board as goals (`kancli boards new Roadmap --goals`,
   `boards kind`, or `t` in the board picker). Links can point at tasks on
-  other boards, written `work#12`, from the link prompt, `kancli link`, `#`
+  other boards, written `work#12`, from the link picker, `kancli link`, `#`
   mentions and the `parent:`/`blocks:`/`blockedby:` filters; a goal's
   progress counts its tickets across boards, and `g` jumps to a linked task
   on another board. A cross-board link is written as a version-2 event, so
@@ -39,6 +39,10 @@
 
 ### Changed
 
+- `l` in the task view links through a fuzzy search picker instead of a
+  typed prompt: it lists every task on every board (this board's first),
+  narrows as you type a number, board or title, and then asks how the two
+  tasks relate. `kancli link` is unchanged.
 - The board is now a single SQLite database, `board.db`. The first run
   imports your existing `board.json` and history and moves the old files to
   `board.backups/v2/`, printing where. Snapshot history is pruned instead of

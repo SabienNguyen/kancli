@@ -24,7 +24,6 @@ const (
 	promptComment
 	promptChecklistItem
 	promptAttachment
-	promptLink
 	promptDescribeBoard
 )
 
@@ -139,19 +138,30 @@ type pickerKind int
 const (
 	pickerBoards pickerKind = iota
 	pickerArchive
+	pickerLinkTarget // every task on every board, searched by ref and title
+	pickerLinkKind   // the five relations a link can have
 )
+
+// linking reports whether a kind is one of the two link steps.
+func (k pickerKind) linking() bool { return k == pickerLinkTarget || k == pickerLinkKind }
 
 // pickItem is a generic list row.
 type pickItem struct {
-	id    string
-	num   int
-	title string
-	desc  string
+	id     string
+	num    int
+	title  string
+	desc   string
+	filter string // what the list's fuzzy filter matches, when not the title
 }
 
 func (p pickItem) Title() string       { return p.title }
 func (p pickItem) Description() string { return p.desc }
-func (p pickItem) FilterValue() string { return p.title }
+func (p pickItem) FilterValue() string {
+	if p.filter != "" {
+		return p.filter
+	}
+	return p.title
+}
 
 // picker is a full-screen list used for boards and archived tasks.
 type picker struct {
@@ -160,6 +170,10 @@ type picker struct {
 	st   Styles
 	keys pickerKeyMap
 	help help.Model
+
+	title string    // heading drawn above the list when the list hides its own
+	from  int       // task the link starts from, on the two link steps
+	to    board.Ref // task the link points at, on the relation step
 }
 
 func newPicker(kind pickerKind, title string, items []pickItem, st Styles) picker {
@@ -183,17 +197,30 @@ func newPicker(kind pickerKind, title string, items []pickItem, st Styles) picke
 		l.Styles.Title = lipgloss.NewStyle().Padding(0, 1).Bold(true).Reverse(true)
 	}
 	l.Styles.NoItems = st.muted.Padding(0, 0, 0, 2)
-	if kind == pickerArchive {
+	switch kind {
+	case pickerArchive:
 		l.SetStatusBarItemName("archived task", "archived tasks")
-	} else {
+	case pickerLinkTarget:
+		l.SetStatusBarItemName("task", "tasks")
+		// The list swaps its title for the filter input, and this one
+		// filters from the start, so the heading is drawn by the picker.
+		l.SetShowTitle(false)
+	case pickerLinkKind:
+		l.SetStatusBarItemName("relation", "relations")
+		l.SetFilteringEnabled(false) // five rows: j/k is quicker than typing
+	default:
 		l.SetStatusBarItemName("board", "boards")
 	}
-	return picker{kind: kind, list: l, st: st, keys: pickerKeys, help: help.New()}
+	return picker{kind: kind, title: title, list: l, st: st, keys: pickerKeys, help: help.New()}
 }
 
 func (p *picker) setSize(width, height int) {
 	frame := p.st.column.GetHorizontalFrameSize()
-	p.list.SetSize(max(10, width-frame), max(5, height-p.st.column.GetVerticalFrameSize()-2))
+	h := height - p.st.column.GetVerticalFrameSize() - 2
+	if !p.list.ShowTitle() {
+		h -= 2 // the heading the picker draws in the list's place
+	}
+	p.list.SetSize(max(10, width-frame), max(5, h))
 	p.help.Width = width - frame
 }
 
@@ -204,6 +231,19 @@ func (p picker) selected() (pickItem, bool) {
 
 func (p picker) filtering() bool { return p.list.SettingFilter() }
 
+// startFilter opens the list's own filter, so the picker is ready to be
+// typed into the moment it appears. The list populates its match set from
+// the Filter key alone, so that is what it is sent.
+func (p *picker) startFilter() tea.Cmd {
+	keys := p.list.KeyMap.Filter.Keys()
+	if len(keys) == 0 {
+		return nil
+	}
+	var cmd tea.Cmd
+	p.list, cmd = p.list.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(keys[0])})
+	return cmd
+}
+
 func (p picker) update(msg tea.Msg) (picker, tea.Cmd) {
 	var cmd tea.Cmd
 	p.list, cmd = p.list.Update(msg)
@@ -212,15 +252,26 @@ func (p picker) update(msg tea.Msg) (picker, tea.Cmd) {
 
 func (p picker) view() string {
 	var bindings []key.Binding
-	if p.kind == pickerBoards {
+	switch p.kind {
+	case pickerBoards:
 		bindings = []key.Binding{p.keys.Select, p.keys.New, p.keys.Rename, p.keys.Describe, p.keys.Kind, p.keys.Delete, p.keys.Back}
-	} else {
+	case pickerLinkTarget:
+		// The list disables its own Filter key while filtering, where the
+		// filter input is on screen instead.
+		bindings = []key.Binding{p.keys.Choose, p.keys.Back, p.list.KeyMap.Filter}
+	case pickerLinkKind:
+		bindings = []key.Binding{p.keys.Choose, p.keys.Back}
+	default:
 		bindings = []key.Binding{p.keys.Restore, p.keys.Delete, p.keys.Back}
 	}
 	// The help model overflows its width by up to one item, which would
 	// widen the whole dialog past the terminal.
 	footer := lipgloss.NewStyle().MaxWidth(max(1, p.help.Width)).Render(p.help.ShortHelpView(bindings))
-	body := lipgloss.JoinVertical(lipgloss.Left, p.list.View(), "", footer)
+	parts := []string{p.list.View(), "", footer}
+	if !p.list.ShowTitle() {
+		parts = append([]string{p.list.Styles.Title.Render(p.title), ""}, parts...)
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	s := p.st.column.BorderForeground(p.st.th.accent)
 	return s.Render(body)
 }
