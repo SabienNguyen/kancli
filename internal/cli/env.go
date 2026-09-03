@@ -120,8 +120,11 @@ func parseAsOf(s string, now time.Time) (time.Time, error) {
 		d, err := board.ParseDue("+"+s[1:], now)
 		if err == nil && d != "" {
 			t, _ := time.ParseInLocation(board.DateLayout, d, time.Local)
-			// +Nd added days; mirror it into the past.
-			delta := t.Sub(board.Today())
+			// +Nd added days; mirror it into the past. The offset is
+			// measured from now's own day, not the wall clock.
+			y, mo, day := now.Date()
+			start := time.Date(y, mo, day, 0, 0, 0, 0, now.Location())
+			delta := t.Sub(start)
 			return now.Add(-delta), nil
 		}
 	}
