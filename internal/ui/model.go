@@ -1059,8 +1059,8 @@ func (m *App) doneWarning(ids []int, target *board.Column) string {
 		if fin, total := m.board.SubtaskProgress(id); total > 0 && fin < total {
 			return fmt.Sprintf("Moved #%d to %s with %d open subtask%s", id, target.Name, total-fin, board.Plural(total-fin))
 		}
-		if bl := m.board.Blockers(id); len(bl) > 0 {
-			return fmt.Sprintf("Moved #%d to %s while still blocked by %s", id, target.Name, bl[0].Ref())
+		if bl := m.board.BlockerRefs(id); len(bl) > 0 {
+			return fmt.Sprintf("Moved #%d to %s while still blocked by %s", id, target.Name, bl[0])
 		}
 	}
 	return ""
@@ -1105,6 +1105,31 @@ func (m *App) addLinkRef(from board.Ref, kind board.LinkKind, to board.Ref) erro
 		to.Board = m.board.ID
 	}
 	return src.AddLinkTo(from.ID, kind, to)
+}
+
+// linkBoard names the board a link would be stored on when it is not the
+// current one, and nil when the link stays here.
+func (m *App) linkBoard(from board.Ref) *board.Board {
+	if from.Board == "" || from.Board == m.board.ID {
+		return nil
+	}
+	return m.file.Board(from.Board)
+}
+
+// relBoard is the board that holds the other end of a relation.
+func (m *App) relBoard(r board.Relation) *board.Board {
+	if r.Board == "" || r.Board == m.board.ID {
+		return m.board
+	}
+	return m.file.Board(r.Board)
+}
+
+// boardName names a board for a status message, falling back to its id.
+func boardName(b *board.Board) string {
+	if b.Name != "" {
+		return b.Name
+	}
+	return b.ID
 }
 
 // linkWord phrases a stored link from the point of view of its source.
@@ -1369,9 +1394,16 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 			m.renderDetail()
 			return m, m.setStatus("%v", err)
 		}
-		m.snapshot()
+		// A link is stored on its source task; when that is a task on
+		// another board, this board's snapshot cannot undo it.
+		elsewhere := m.linkBoard(from)
+		if elsewhere == nil {
+			m.snapshot()
+		}
 		if err := m.addLinkRef(from, kind, to); err != nil {
-			m.dropSnapshot()
+			if elsewhere == nil {
+				m.dropSnapshot()
+			}
 			m.renderDetail()
 			return m, m.setStatus("%v", err)
 		}
@@ -1383,6 +1415,10 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		other := to
 		if !outgoing {
 			other = from
+		}
+		if elsewhere != nil {
+			return m, m.changed("Linked #%d %s %s (on %s, not undoable here)",
+				msg.ref, linkWord(kind, outgoing), other, boardName(elsewhere))
 		}
 		return m, m.changed("Linked #%d %s %s", msg.ref, linkWord(kind, outgoing), other)
 	case promptAttachment:
@@ -1458,14 +1494,36 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, m.setStatus("Select an item with tab first")
 			}
-			m.snapshot()
-			if r.Outgoing {
-				m.board.RemoveLink(id, r.Kind, r.Task.ID)
-			} else {
-				m.board.RemoveLink(r.Task.ID, r.Kind, id)
+			other := board.Ref{Board: r.Board, ID: r.Task.ID}
+			src, from, to := m.board, id, other
+			if !r.Outgoing {
+				// An incoming relation is stored on the other task, so it
+				// is removed on the board that holds that task.
+				src, from, to = m.relBoard(r), r.Task.ID, board.Ref{ID: id}
+				if src != m.board {
+					to.Board = m.board.ID
+				}
+			}
+			if src == nil {
+				return m, m.setStatus("No board %q", r.Board)
+			}
+			// Undo is per board, so a link another board stores is outside
+			// it: no snapshot, and the status says as much.
+			if src == m.board {
+				m.snapshot()
+			}
+			if !src.RemoveLinkTo(from, r.Kind, to) {
+				if src == m.board {
+					m.dropSnapshot()
+				}
+				m.renderDetail()
+				return m, m.setStatus("No link to %s left to remove", other)
 			}
 			m.renderDetail()
-			return m, m.changed("Unlinked %s", r.Task.Ref())
+			if src != m.board {
+				return m, m.changed("Unlinked %s (on %s, not undoable here)", other, boardName(src))
+			}
+			return m, m.changed("Unlinked %s", other)
 		}
 		m.renderDetail()
 		return m, m.changed("Removed item")

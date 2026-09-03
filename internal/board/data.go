@@ -416,7 +416,7 @@ func (f *File) RemoveBoard(id string) error {
 				f.ActiveBoard = f.Boards[0].ID
 			}
 			for _, ob := range f.Boards {
-				ob.dropLinksToBoard(id)
+				ob.removeLinksToBoard(id)
 			}
 			f.emit(Event{Kind: EvBoardRemoved, Board: id})
 			return nil
@@ -725,8 +725,11 @@ func (b *Board) DeleteTask(id int) bool {
 	}
 	b.invalidateIndex()
 	b.touch()
-	b.dropLinksTo(id)
+	b.dropOwnLinksTo(id)
 	b.emit(Event{Kind: EvTaskDeleted, Task: id, From: col})
+	// Links other boards hold are removed on those boards, each with its
+	// own event, so the log and the live state agree.
+	b.removeForeignLinksTo(id)
 	return true
 }
 
@@ -997,27 +1000,10 @@ func (b *Board) Replace(nb Board) {
 	b.invalidateIndex()
 	for _, e := range events {
 		b.emit(e)
-		// Replaying the deletion drops the task's links on every other
-		// board, so the live state has to lose them too.
+		// A deletion also loses the links other boards hold to the task,
+		// each on the board that stores it and with its own event.
 		if e.Kind == EvTaskDeleted {
-			b.dropForeignLinksTo(e.Task)
-		}
-	}
-}
-
-// dropForeignLinksTo strips links pointing at one of this board's tasks
-// from the other boards of the file, leaving this board's own links alone.
-func (b *Board) dropForeignLinksTo(id int) {
-	if b.file == nil {
-		return
-	}
-	target := Ref{Board: b.ID, ID: id}
-	for _, ob := range b.file.Boards {
-		if ob == b {
-			continue
-		}
-		if ob.dropLinks(func(l Link) bool { return ob.canon(ob.linkRef(l)) == target }) {
-			ob.touch()
+			b.removeForeignLinksTo(e.Task)
 		}
 	}
 }

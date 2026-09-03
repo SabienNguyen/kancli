@@ -155,7 +155,7 @@ Flags take one dash or two; `-as-of` and `--as-of` are the same thing.
 | `s`                | Cycle sort: manual, priority, due, created, updated, title |
 | `u` / `U`          | Undo / redo                                   |
 | `S`                | Stats screen                                  |
-| `b`                | Boards: open, create, rename, describe (`e`), mark as goals (`k`), delete |
+| `b`                | Boards: open, create, rename, describe (`e`), mark as goals (`t`), delete |
 | `z`                | Archived tasks: restore or delete             |
 | `Z`                | Archive every task in the last column         |
 | `C` / `E` / `D`    | Add / edit / delete the focused column        |
@@ -245,8 +245,9 @@ kancli boards new Roadmap --goals   # or: kancli boards kind roadmap goals
 kancli boards kind roadmap tasks    # back to a normal board
 ```
 
-In the app, press `b` for the board picker and `k` to toggle the board under
-the cursor between goals and tasks.
+In the app, press `b` for the board picker and `t` to toggle the board under
+the cursor between goals and tasks (`j`/`k` move the cursor, as everywhere
+else).
 
 A goal is connected to the work that delivers it with the usual links, from
 either end. A task on another board is written `work#12`: the board id or

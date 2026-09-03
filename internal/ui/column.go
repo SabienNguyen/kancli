@@ -162,8 +162,10 @@ func (d cardDelegate) metaLine(t board.Task, width int) string {
 		if r, ok := parentRef(d.board, t); ok {
 			parts = append(parts, d.st.muted.Render(d.g.subtask+" "+r.String()))
 		}
-		if bl := d.board.Blockers(t.ID); len(bl) > 0 {
-			parts = append(parts, d.st.err.Render("blocked by "+bl[0].Ref()))
+		if bl := d.board.BlockerRefs(t.ID); len(bl) > 0 {
+			// A blocker on another board is written the way a user would
+			// type it: "roadmap#1", never a bare "#1" of this board.
+			parts = append(parts, d.st.err.Render("blocked by "+bl[0].String()))
 		}
 	}
 	if n := len(t.Attachments); n > 0 {

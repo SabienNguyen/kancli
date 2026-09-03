@@ -242,7 +242,7 @@ var pickerKeys = pickerKeyMap{
 	New:      bind("n", "new board", "n"),
 	Rename:   bind("r", "rename", "r"),
 	Describe: bind("e", "describe", "e"),
-	Kind:     bind("k", "toggle goals", "k"),
+	Kind:     bind("t", "toggle goals", "t"), // not k: the list reads k as cursor up
 	Delete:   bind("d", "delete", "d"),
 	Restore:  bind("enter", "restore", "enter"),
 	Back:     bind("esc", "back", "esc", "q"),

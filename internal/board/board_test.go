@@ -751,7 +751,7 @@ func TestReplayRefusesNewerEvents(t *testing.T) {
 	if !strings.Contains(err.Error(), "task.teleported") {
 		t.Errorf("message should name the kind: %v", err)
 	}
-	future := Event{Seq: 1, Board: b.ID, Kind: EvTaskDeleted, Task: 1, V: EventVersion + 1}
+	future := Event{Seq: 1, Board: b.ID, Kind: EvTaskDeleted, Task: 1, V: MaxEventVersion + 1}
 	err = f.Replay([]Event{future})
 	if !errors.Is(err, ErrNewerEvents) {
 		t.Fatalf("newer v: err = %v, want ErrNewerEvents", err)

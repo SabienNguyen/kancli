@@ -42,8 +42,15 @@ func (r Ref) String() string {
 	return fmt.Sprintf("%s#%d", r.Board, r.ID)
 }
 
+// boardWord is the shape of the board part of a reference: Unicode
+// letters, digits and underscores, in hyphen-separated words. Slug keeps
+// Unicode letters, so a board named "Über" has to be typeable as "über#1".
+// A word never starts or ends with a hyphen, so the "-" in "PR-#12" is a
+// separator rather than the tail of a board name.
+const boardWord = `[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)*`
+
 // boardWordRE is the shape of the board part of a reference.
-var boardWordRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var boardWordRE = regexp.MustCompile(`^` + boardWord + `$`)
 
 // ParseRef reads "#12", "12", "work#12" or "Work#12". cur resolves a bare
 // number; f resolves board ids and names (nil f: only bare numbers, plus
@@ -255,8 +262,19 @@ func (b *Board) AddLinkTo(from int, kind LinkKind, to Ref) error {
 	src.Links = append(src.Links, Link{Kind: kind, Task: to.ID, Board: to.Board})
 	src.UpdatedAt = b.now()
 	src.logAt(src.UpdatedAt, "Linked: %s %s", kindVerb(kind), to)
-	b.emit(Event{Kind: EvLinkAdded, Task: from, Index: to.ID, Text: string(kind), To: to.Board})
+	b.emit(Event{Kind: EvLinkAdded, Task: from, Index: to.ID, Text: string(kind),
+		To: to.Board, V: linkEventVersion(to.Board)})
 	return nil
+}
+
+// linkEventVersion is the version a link event is written with: the
+// default for a link inside one board, LinkEventVersion when it names
+// another board, whose meaning an older build would get wrong.
+func linkEventVersion(otherBoard string) int {
+	if otherBoard == "" {
+		return 0 // the store fills in EventVersion
+	}
+	return LinkEventVersion
 }
 
 func kindVerb(k LinkKind) string {
@@ -319,7 +337,8 @@ func (b *Board) RemoveLinkTo(from int, kind LinkKind, to Ref) bool {
 			t.Links = append(t.Links[:i], t.Links[i+1:]...)
 			t.UpdatedAt = b.now()
 			t.logAt(t.UpdatedAt, "Unlinked: %s %s", kindVerb(kind), to)
-			b.emit(Event{Kind: EvLinkRemoved, Task: from, Index: to.ID, Text: string(kind), To: to.Board})
+			b.emit(Event{Kind: EvLinkRemoved, Task: from, Index: to.ID, Text: string(kind),
+				To: to.Board, V: linkEventVersion(to.Board)})
 			return true
 		}
 	}
@@ -345,21 +364,57 @@ func (b *Board) RemoveLinksBetween(a, c int) int {
 	return n
 }
 
-// dropLinksTo strips links pointing at a deleted task of b, on every board
-// of the file (no events: the deletion event replays this).
-func (b *Board) dropLinksTo(id int) {
+// muted reports whether the board is replaying (or frozen), in which case
+// a mutation must not draw conclusions of its own: whatever it would do to
+// another board arrives as that board's own event.
+func (b *Board) muted() bool {
+	return b.rec != nil && b.rec.muted
+}
+
+// dropOwnLinksTo strips this board's own links to one of its tasks that is
+// going away. They need no event: the deletion event replays this.
+func (b *Board) dropOwnLinksTo(id int) {
 	target := Ref{Board: b.ID, ID: id}
-	for _, ob := range b.boards() {
-		if ob.dropLinks(func(l Link) bool { return ob.canon(ob.linkRef(l)) == target }) && ob != b {
-			ob.touch()
+	b.dropLinks(func(l Link) bool { return b.canon(b.linkRef(l)) == target })
+}
+
+// removeForeignLinksTo removes the links other boards hold to a task of b
+// that has just gone, one link.removed event per link on the board that
+// stores it. During replay it does nothing: those events follow in the log
+// with their own timestamps, exactly like linkMentions.
+func (b *Board) removeForeignLinksTo(id int) {
+	if b.file == nil || b.muted() {
+		return
+	}
+	target := Ref{Board: b.ID, ID: id}
+	for _, ob := range b.file.Boards {
+		if ob == b {
+			continue
 		}
+		ob.removeLinksMatching(func(l Link) bool { return ob.canon(ob.linkRef(l)) == target })
 	}
 }
 
-// dropLinksToBoard strips every link into a board that is going away.
-func (b *Board) dropLinksToBoard(id string) {
-	if b.dropLinks(func(l Link) bool { return b.canon(b.linkRef(l)).Board == id }) {
-		b.touch()
+// removeLinksToBoard removes this board's links into a board that is going
+// away, each as its own event. Replay leaves it to those events.
+func (b *Board) removeLinksToBoard(id string) {
+	if b.muted() {
+		return
+	}
+	b.removeLinksMatching(func(l Link) bool { return b.canon(b.linkRef(l)).Board == id })
+}
+
+// removeLinksMatching removes every selected link through RemoveLinkTo, so
+// each removal is recorded, logged on the task and undone the same way a
+// hand-typed unlink is.
+func (b *Board) removeLinksMatching(drop func(Link) bool) {
+	for i := range b.Tasks {
+		id := b.Tasks[i].ID
+		for _, l := range append([]Link(nil), b.Tasks[i].Links...) {
+			if drop(l) {
+				b.RemoveLinkTo(id, l.Kind, b.linkRef(l))
+			}
+		}
 	}
 }
 
@@ -512,6 +567,18 @@ func (b *Board) Blockers(id int) []Task {
 	return out
 }
 
+// BlockerRefs names the unfinished blockers of a task the way a user
+// writes them, relative to this board: "#4" here, "work#1" elsewhere.
+func (b *Board) BlockerRefs(id int) []Ref {
+	var out []Ref
+	for _, rel := range b.incoming(id, LinkBlocks) {
+		if !b.finished(rel) {
+			out = append(out, Ref{Board: rel.Board, ID: rel.Task.ID})
+		}
+	}
+	return out
+}
+
 // IsBlocked reports whether a task has any unfinished blocker.
 func (b *Board) IsBlocked(id int) bool {
 	return len(b.Blockers(id)) > 0
@@ -569,7 +636,11 @@ func (b *Board) BlockedCount() int {
 
 // --- mentions ---------------------------------------------------------------
 
-var mentionRE = regexp.MustCompile(`(?:^|[^\w&])([A-Za-z0-9_-]+)?#(\d+)\b`)
+// mentionRE finds "#12" and "work#12" in free text. The character before
+// the reference must not be part of a word (so "&#38;" and "a#12" are not
+// mentions), and the optional board word cannot swallow a trailing hyphen,
+// so "see PR-#12" mentions #12 of this board.
+var mentionRE = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_&])(` + boardWord + `)?#(\d+)\b`)
 
 // Mentions extracts task numbers written as #12 in free text. Mentions of
 // tasks on other boards (work#12) are not numbers of this board and are

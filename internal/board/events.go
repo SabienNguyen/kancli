@@ -42,11 +42,24 @@ const (
 	EvLinkRemoved       EventKind = "link.removed"
 )
 
-// EventVersion is written into every event as "v". Bump it when the
-// meaning of an existing kind or its data payload changes; a build
-// refuses to replay events with a higher version than it knows. Events
-// without "v" (written before this field existed) are version 1.
+// EventVersion is the version written into an event's "v" by default:
+// what an unchanged event kind still means. Events without "v" (written
+// before the field existed) are version 1 too.
 const EventVersion = 1
+
+// MaxEventVersion is the highest event version this build understands. A
+// version is per event, not per log: a kind whose meaning changed is
+// stamped with its own version (a cross-board link event is v2, because an
+// older build would replay it against the wrong board), while every other
+// event stays at EventVersion. A build refuses to replay any event with a
+// higher version than this.
+const MaxEventVersion = 2
+
+// LinkEventVersion is stamped on link.added / link.removed events that name
+// another board in "to". Older builds ignore the field and would apply the
+// link to whatever task has that number on the event's own board, so they
+// must refuse the log instead.
+const LinkEventVersion = 2
 
 // ErrNewerEvents wraps every replay failure caused by data this build
 // does not understand, so callers can word the advice.
@@ -211,9 +224,9 @@ func (f *File) Pending() []Event {
 // and uses the event's timestamp as "now" so the result matches the
 // original mutation exactly.
 func (f *File) Apply(e Event) error {
-	if e.V > EventVersion {
+	if e.V > MaxEventVersion {
 		return &NewerEventError{Seq: e.Seq, Kind: e.Kind,
-			Detail: fmt.Sprintf("format v%d, this build reads v%d", e.V, EventVersion)}
+			Detail: fmt.Sprintf("format v%d, this build reads v%d", e.V, MaxEventVersion)}
 	}
 	f.Attach()
 	rec := f.rec

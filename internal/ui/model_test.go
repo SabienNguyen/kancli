@@ -516,15 +516,23 @@ func TestLinkPromptAcceptsBoardRefs(t *testing.T) {
 	}
 }
 
-// TestPickerTogglesKind toggles a board between goals and tasks with k.
+// TestPickerTogglesKind toggles a board between goals and tasks with t.
+// k stays the vim-style cursor up the list gives it.
 func TestPickerTogglesKind(t *testing.T) {
 	m, _ := newTestApp(t)
 	m = press(m, "b", "j", "k")
+	if it, ok := m.pick.selected(); !ok || it.id != "demo" {
+		t.Fatalf("k should move the cursor up, on %+v", it)
+	}
+	if r := m.file.Board("roadmap"); r == nil || !r.IsGoals() {
+		t.Fatal("k should not change the board kind")
+	}
+	m = press(m, "j", "t")
 	if m.state != statePicker {
-		t.Fatal("k should keep the picker open")
+		t.Fatal("t should keep the picker open")
 	}
 	if r := m.file.Board("roadmap"); r == nil || r.IsGoals() {
-		t.Error("k should turn the goal board into a task board")
+		t.Error("t should turn the goal board into a task board")
 	}
 	if !strings.Contains(m.statusMsg, "Roadmap is now a task board") {
 		t.Errorf("status = %q", m.statusMsg)
@@ -532,9 +540,9 @@ func TestPickerTogglesKind(t *testing.T) {
 	if it, ok := m.pick.selected(); !ok || it.id != "roadmap" {
 		t.Errorf("the picker should stay on Roadmap, on %+v", it)
 	}
-	m = press(m, "k")
+	m = press(m, "t")
 	if r := m.file.Board("roadmap"); r == nil || !r.IsGoals() {
-		t.Error("k should turn it back into a goal board")
+		t.Error("t should turn it back into a goal board")
 	}
 	if !strings.Contains(m.statusMsg, "Roadmap is now a goal board") {
 		t.Errorf("status = %q", m.statusMsg)
@@ -898,5 +906,112 @@ func TestSnapshotCapsUndoStackBytes(t *testing.T) {
 	}
 	if total > maxUndoBytes {
 		t.Errorf("undo stack holds %d bytes, want at most %d", total, maxUndoBytes)
+	}
+}
+
+// TestDetailUnlinkForeignRelation removes a relation that another board
+// stores. The same goal also has a same-board subtask with the same
+// number, which must survive.
+func TestDetailUnlinkForeignRelation(t *testing.T) {
+	m, _ := newTestApp(t)
+	demo, road := m.file.Board("demo"), m.file.Board("roadmap")
+	if err := road.AddLink(2, board.LinkSubtaskOf, 1); err != nil {
+		t.Fatalf("same-board link: %v", err)
+	}
+	if err := demo.AddLinkTo(2, board.LinkSubtaskOf, board.Ref{Board: road.ID, ID: 1}); err != nil {
+		t.Fatalf("cross-board link: %v", err)
+	}
+	m = press(m, "b", "j", "enter")
+	if m.board.ID != road.ID {
+		t.Fatalf("on board %q, want roadmap", m.board.ID)
+	}
+	mm, _ := m.openDetail(1)
+	m = mm.(App)
+
+	idx := -1
+	for i, r := range m.detail.links {
+		if r.Board == demo.ID && r.Task.ID == 2 {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("no demo#2 relation in %v", m.detail.links)
+	}
+	m.detail.cursor = idx
+	undo := len(m.undoStack)
+	m = press(m, "X")
+
+	if len(demo.Task(2).Links) != 0 {
+		t.Errorf("the foreign link survived: %+v", demo.Task(2).Links)
+	}
+	if p := road.Parent(2); p == nil || p.ID != 1 {
+		t.Error("the same-board link with the colliding number was removed instead")
+	}
+	if !strings.Contains(m.statusMsg, "Unlinked") {
+		t.Errorf("status = %q", m.statusMsg)
+	}
+	// The removal happened on another board, which this board's undo
+	// cannot restore, so it must not claim it can.
+	if len(m.undoStack) != undo {
+		t.Errorf("undo stack grew by %d for a link stored on another board", len(m.undoStack)-undo)
+	}
+	if !strings.Contains(m.statusMsg, "not undoable") {
+		t.Errorf("status = %q, want it to say the removal is not undoable here", m.statusMsg)
+	}
+
+	// A relation that is already gone removes nothing and says so, without
+	// leaving a lying undo entry behind.
+	road.RemoveLink(2, board.LinkSubtaskOf, 1)
+	for i, r := range m.detail.links {
+		if r.Board == "" && r.Task.ID == 2 {
+			m.detail.cursor = i
+		}
+	}
+	undo = len(m.undoStack)
+	m = press(m, "X")
+	if len(m.undoStack) != undo {
+		t.Errorf("removing nothing pushed an undo entry")
+	}
+	if strings.Contains(m.statusMsg, "Unlinked") {
+		t.Errorf("status = %q, want it to report that nothing was removed", m.statusMsg)
+	}
+}
+
+// TestForeignLinkIsNotUndoable: a link normalised onto another board is
+// outside this board's undo, so no undo entry is pushed and the status
+// says so.
+func TestForeignLinkIsNotUndoable(t *testing.T) {
+	m, _ := newTestApp(t)
+	mm, _ := m.openDetail(3)
+	m = mm.(App)
+	undo := len(m.undoStack)
+	m = press(m, "l")
+	m = typeText(m, "blocked-by roadmap#1")
+	m = press(m, "enter")
+	if !m.board.IsBlocked(3) {
+		t.Fatalf("the goal should block #3 (status %q)", m.statusMsg)
+	}
+	if len(m.undoStack) != undo {
+		t.Errorf("undo stack grew by %d for a link stored on Roadmap", len(m.undoStack)-undo)
+	}
+	if !strings.Contains(m.statusMsg, "not undoable") {
+		t.Errorf("status = %q, want it to say the link is not undoable here", m.statusMsg)
+	}
+}
+
+// TestForeignBlockerNamesItsBoard: a blocker on another board is written
+// "roadmap#1" on the card and in the finish warning, never a bare "#1".
+func TestForeignBlockerNamesItsBoard(t *testing.T) {
+	m, _ := newTestApp(t)
+	road := m.file.Board("roadmap")
+	if err := road.AddLinkTo(1, board.LinkBlocks, board.Ref{Board: "demo", ID: 3}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if v := m.View(); !strings.Contains(v, "blocked by roadmap#1") {
+		t.Errorf("card meta should name the foreign blocker:\n%s", v)
+	}
+	warn := m.doneWarning([]int{3}, m.board.DoneColumn())
+	if !strings.Contains(warn, "still blocked by roadmap#1") {
+		t.Errorf("finish warning = %q", warn)
 	}
 }
