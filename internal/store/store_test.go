@@ -767,7 +767,14 @@ func TestStatsFromEvents(t *testing.T) {
 	b := f.Active()
 	now := board.Now()
 	s := board.ComputeStats(b, events, now, 90)
-	if s.Events != len(events) || s.Live != 8 || s.InProgress != 2 {
+	// The sample file holds more than one board; the headline counts only the active one's events.
+	want := 0
+	for _, e := range events {
+		if e.Board == b.ID {
+			want++
+		}
+	}
+	if s.Events != want || s.Live != 8 || s.InProgress != 2 {
 		t.Errorf("headline = events %d live %d wip %d", s.Events, s.Live, s.InProgress)
 	}
 	if len(s.Finished) != 10 { // 2 in the sample board + 8 archived demo tasks
