@@ -151,13 +151,21 @@ func (d cardDelegate) metaLine(t board.Task, width int) string {
 			if done == total {
 				s = d.st.success
 			}
-			parts = append(parts, s.Render(fmt.Sprintf("%d/%d subtask%s", done, total, board.Plural(total))))
+			// Goal cards lead with the roll-up, short enough to survive on a
+			// compact card: "↳ 3/7".
+			text := fmt.Sprintf("%d/%d subtask%s", done, total, board.Plural(total))
+			if d.board.IsGoals() {
+				text = fmt.Sprintf("%s %d/%d", d.g.subtask, done, total)
+			}
+			parts = append(parts, s.Render(text))
 		}
-		if p := d.board.Parent(t.ID); p != nil {
-			parts = append(parts, d.st.muted.Render(d.g.subtask+" "+p.Ref()))
+		if r, ok := parentRef(d.board, t); ok {
+			parts = append(parts, d.st.muted.Render(d.g.subtask+" "+r.String()))
 		}
-		if bl := d.board.Blockers(t.ID); len(bl) > 0 {
-			parts = append(parts, d.st.err.Render("blocked by "+bl[0].Ref()))
+		if bl := d.board.BlockerRefs(t.ID); len(bl) > 0 {
+			// A blocker on another board is written the way a user would
+			// type it: "roadmap#1", never a bare "#1" of this board.
+			parts = append(parts, d.st.err.Render("blocked by "+bl[0].String()))
 		}
 	}
 	if n := len(t.Attachments); n > 0 {
@@ -170,6 +178,27 @@ func (d cardDelegate) metaLine(t board.Task, width int) string {
 		return ""
 	}
 	return ansi.Truncate(strings.Join(parts, d.st.muted.Render(" "+d.g.dot+" ")), width, d.g.ellipsis)
+}
+
+// parentRef names the task this one is a subtask of, the way a user writes
+// it: "#3" on the same board, "roadmap#1" when the parent is a goal (or any
+// task) on another board.
+func parentRef(b *board.Board, t board.Task) (board.Ref, bool) {
+	for _, l := range t.Links {
+		if l.Kind != board.LinkSubtaskOf {
+			continue
+		}
+		ob, other := b.Resolve(l)
+		if other == nil {
+			continue
+		}
+		r := board.Ref{ID: other.ID}
+		if ob.ID != b.ID {
+			r.Board = ob.ID
+		}
+		return r, true
+	}
+	return board.Ref{}, false
 }
 
 // column is one lane of the board, backed by a bubbles list used purely as
@@ -219,7 +248,11 @@ func (c *column) configure(col board.Column, count int, exceeded bool, d cardDel
 		title = fmt.Sprintf("%s %d/%d", col.Name, count, col.WIPLimit)
 	}
 	c.list.Title = title
-	c.list.SetStatusBarItemName("task", "tasks")
+	noun := "task"
+	if d.board != nil {
+		noun = d.board.Noun()
+	}
+	c.list.SetStatusBarItemName(noun, noun+"s")
 	ts := lipgloss.NewStyle().Padding(0, 1).Bold(true).
 		Background(c.color).Foreground(c.st.th.onColor)
 	if exceeded {

@@ -34,7 +34,7 @@ func SampleFile() *File {
 	step(1)
 	add("todo", "Buy milk", "strawberry milk", PriorityNone, "", []string{"home"}, "")
 	step(3)
-	add("todo", "Plan the team offsite", "Venue, agenda and travel.", PriorityLow, day(20), []string{"planning"}, "alex")
+	t4 := add("todo", "Plan the team offsite", "Venue, agenda and travel.", PriorityLow, day(20), []string{"planning"}, "alex")
 	step(20)
 	// Day 1: work starts.
 	t5 := add("todo", "Ship the CLI subcommands", "add, list, move, done, export and import.", PriorityUrgent, day(0), []string{"feature"}, "sam")
@@ -63,7 +63,25 @@ func SampleFile() *File {
 	b.AddAttachment(t1.ID, "https://github.com/charmbracelet/kancli") //nolint:errcheck // demo data
 	step(40)
 	b.AddComment(t5.ID, "Export works, import is next.") //nolint:errcheck // demo data
+	step(8)
 
+	// A second board holds the goals the demo tickets roll up into. The
+	// subtask links live on the tickets, which is where a "subtask of"
+	// relation is always stored, so the goals count them from the other
+	// side.
+	r, _ := f.AddBoard("Roadmap")
+	f.DescribeBoard(r.ID, "Quarter goals") //nolint:errcheck // demo data
+	f.SetBoardKind(r.ID, BoardKindGoals)   //nolint:errcheck // demo data
+	r.clock = func() time.Time { return cursor }
+	g1, _ := r.AddTask(Task{Column: "todo", Title: "Ship 1.0", Description: "Cut the first stable release.", Priority: PriorityHigh, Due: day(30), Labels: []string{"release"}, Assignee: "sam"})
+	step(2)
+	g2, _ := r.AddTask(Task{Column: "in_progress", Title: "Grow the docs", Description: "Cover every command and key.", Priority: PriorityMedium, Labels: []string{"docs"}})
+	step(1)
+	b.AddLinkTo(t8.ID, LinkSubtaskOf, Ref{Board: r.ID, ID: g1.ID}) //nolint:errcheck // demo data
+	b.AddLinkTo(t5.ID, LinkSubtaskOf, Ref{Board: r.ID, ID: g1.ID}) //nolint:errcheck // demo data
+	b.AddLinkTo(t4.ID, LinkSubtaskOf, Ref{Board: r.ID, ID: g2.ID}) //nolint:errcheck // demo data
+
+	r.clock = Now
 	b.clock = Now
 	return f
 }

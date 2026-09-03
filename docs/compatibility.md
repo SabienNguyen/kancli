@@ -7,7 +7,7 @@ dir (or wherever `KANCLI_CONFIG` points):
 
 | File | What it is | Version marker |
 |---|---|---|
-| `board.db` | one SQLite database in WAL mode, holding everything: `events` (the append-only history, one row per event), `snapshots` (folded state, kept under a retention policy) and `meta` | `meta.format`, the store format, currently 1. Snapshot rows carry a board file whose `"version"` is `board.FileVersion` (2); every event row carries `v`, `board.EventVersion` (1) |
+| `board.db` | one SQLite database in WAL mode, holding everything: `events` (the append-only history, one row per event), `snapshots` (folded state, kept under a retention policy) and `meta` | `meta.format`, the store format, currently 1. Snapshot rows carry a board file whose `"version"` is `board.FileVersion` (2); every event row carries `v`: `board.EventVersion` (1) for an unchanged event kind, its own number for a kind whose meaning changed, and this build reads up to `board.MaxEventVersion` (2) |
 | `config.json` | user settings | none; unknown keys are ignored, renamed keys are aliased |
 
 Older kancli builds kept the same data in `board.json`,
@@ -52,6 +52,37 @@ saved survives a power failure.
 - A config key that was renamed keeps working under its old name and
   prints a warning naming the new one.
 
+## Goal boards and cross-board links
+
+Additive in the file: `board.FileVersion` is unchanged and every existing
+file loads as it did. `board.EventVersion`, the version events are written
+with by default, is still 1; only the events that name another board are
+stamped `v: 2`, and this build reads up to `board.MaxEventVersion` (2):
+
+- `Link.board` (json `board,omitempty`): the id of the other task's board.
+  Absent or empty means the link points at a task on the same board, which
+  is what every link written before this version is.
+- `Board.kind` (json `kind,omitempty`): `""` or `"tasks"` for a ticket
+  board, `"goals"` for a goal board. Absent means a ticket board.
+- The event kind `board.kind` (`Text` = the new kind) records the change.
+  The `link.added` / `link.removed` events carry the other task's board in
+  their otherwise unused `to` field. Such an event is written with `v: 2`,
+  because an older build would ignore `to` and apply the link to whatever
+  task has that number on the event's own board. Link events inside one
+  board, and every other kind, keep the default `v: 1`.
+- Deleting a task, or a whole board, drops the links other boards hold to
+  it. Each of those removals is its own `link.removed` event on the board
+  that stores the link (also `v: 2`), so the history and a replay agree
+  with the live state on both sides.
+
+The caveat: an older kancli ignores both fields, so it must not read a log
+that has any of these version-2 events — and it does not: it stops with
+"written by a newer kancli" and changes nothing. A board file (snapshot)
+with cross-board links opened by an older build would still show them as
+dangling (`no task #12`, looked up on the wrong board) and drop
+`Link.board` on its next write of that task, which silently turns the link
+into a same-board one.
+
 ## What a user gets on downgrade
 
 Running an older kancli on newer data fails before anything is written:
@@ -74,9 +105,12 @@ directory, which the upgrade notice warns about.
    files with the field missing.
 2. **Changing the meaning** of an existing field or of an event's data
    payload requires bumping the version: `board.FileVersion` for the
-   snapshot, `board.EventVersion` for events. Write a migration in
-   `internal/board/decode.go` (snapshot) or a version switch in
-   `(*File).Apply` (events) that understands every earlier version.
+   snapshot, and for events a version of the affected kind: stamp the new
+   number on the events whose meaning changed and raise
+   `board.MaxEventVersion` (what this build can read), leaving
+   `board.EventVersion` as the default other kinds are written with. Write
+   a migration in `internal/board/decode.go` (snapshot) or a version switch
+   in `(*File).Apply` (events) that understands every earlier version.
 3. **Bumping the store format** (`store.StoreFormat`, written to
    `meta.format`) means a schema migration keyed on `meta.format` — or an
    importer like `internal/store/import.go` when the whole container

@@ -28,12 +28,18 @@ type Board struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
+	Kind        string   `json:"kind,omitempty"` // "" or "tasks" = ticket board; "goals" = goal board
 	Columns     []Column `json:"columns"`
 	Tasks       []Task   `json:"tasks"`
 	NextID      int      `json:"next_id"`
 
 	rec   *recorder
 	clock func() time.Time
+	// file is the board's file, so a link can be followed to another
+	// board. It is set by File.Attach and never serialised; a board built
+	// on its own (tests, the diff scratch board) has none and treats every
+	// foreign link as unresolvable.
+	file *File
 	// stamp is the clock reading of the mutation in progress, so the event
 	// it emits carries exactly the time written into the task.
 	stamp time.Time
@@ -273,7 +279,9 @@ func (f *File) Active() *Board {
 		return b
 	}
 	if len(f.Boards) == 0 {
-		f.Boards = append(f.Boards, NewBoard("Main"))
+		nb := NewBoard("Main")
+		nb.file = f // the back-reference File.Attach would set
+		f.Boards = append(f.Boards, nb)
 	}
 	f.ActiveBoard = f.Boards[0].ID
 	return f.Boards[0]
@@ -344,6 +352,45 @@ func (f *File) DescribeBoard(id, text string) error {
 	return nil
 }
 
+// Board kinds. A ticket board stores no kind at all, so files written
+// before goal boards existed stay byte-for-byte what they were.
+const BoardKindTasks, BoardKindGoals = "tasks", "goals"
+
+// IsGoals reports whether the board holds goals rather than tickets.
+func (b *Board) IsGoals() bool { return b.Kind == BoardKindGoals }
+
+// Noun is what one card on this board is called, for status messages and
+// CLI output.
+func (b *Board) Noun() string {
+	if b.IsGoals() {
+		return "goal"
+	}
+	return "task"
+}
+
+// SetBoardKind marks a board as a goal board or a ticket board. It accepts
+// "", "tasks" and "goals" in any case; a ticket board stores "".
+func (f *File) SetBoardKind(id, kind string) error {
+	b := f.Board(id)
+	if b == nil {
+		return fmt.Errorf("no board %q", id)
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", BoardKindTasks:
+		kind = ""
+	case BoardKindGoals:
+		kind = BoardKindGoals
+	default:
+		return fmt.Errorf(`board kind must be "tasks" or "goals"`)
+	}
+	if kind == b.Kind {
+		return nil
+	}
+	b.Kind = kind
+	f.emit(Event{Kind: EvBoardKind, Board: b.ID, Text: kind})
+	return nil
+}
+
 // Activate makes a board the active one.
 func (f *File) Activate(id string) error {
 	b := f.Board(id)
@@ -367,6 +414,9 @@ func (f *File) RemoveBoard(id string) error {
 			f.Boards = append(f.Boards[:i], f.Boards[i+1:]...)
 			if f.ActiveBoard == id {
 				f.ActiveBoard = f.Boards[0].ID
+			}
+			for _, ob := range f.Boards {
+				ob.removeLinksToBoard(id)
 			}
 			f.emit(Event{Kind: EvBoardRemoved, Board: id})
 			return nil
@@ -675,8 +725,11 @@ func (b *Board) DeleteTask(id int) bool {
 	}
 	b.invalidateIndex()
 	b.touch()
-	b.dropLinksTo(id)
+	b.dropOwnLinksTo(id)
 	b.emit(Event{Kind: EvTaskDeleted, Task: id, From: col})
+	// Links other boards hold are removed on those boards, each with its
+	// own event, so the log and the live state agree.
+	b.removeForeignLinksTo(id)
 	return true
 }
 
@@ -940,13 +993,18 @@ func (b *Board) MoveColumn(id string, delta int) bool {
 // the change rather than with the size of the board.
 func (b *Board) Replace(nb Board) {
 	events := b.diff(nb)
-	rec, clock, gen := b.rec, b.clock, b.gen
+	rec, clock, file, gen := b.rec, b.clock, b.file, b.gen
 	*b = nb
-	b.rec, b.clock = rec, clock
+	b.rec, b.clock, b.file = rec, clock, file
 	b.gen = gen + 1
 	b.invalidateIndex()
 	for _, e := range events {
 		b.emit(e)
+		// A deletion also loses the links other boards hold to the task,
+		// each on the board that stores it and with its own event.
+		if e.Kind == EvTaskDeleted {
+			b.removeForeignLinksTo(e.Task)
+		}
 	}
 }
 
@@ -972,7 +1030,7 @@ func (b *Board) diff(nb Board) []Event {
 	// The board settings come back before the tasks do: a snapshot taken
 	// part way through the events must never see a task in a column the
 	// board no longer has, or normalisation would move it.
-	if nb.Name != b.Name || nb.Description != b.Description || nb.NextID != b.NextID ||
+	if nb.Name != b.Name || nb.Description != b.Description || nb.Kind != b.Kind || nb.NextID != b.NextID ||
 		!bytes.Equal(MustJSON(nb.Columns), MustJSON(b.Columns)) {
 		meta := nb
 		meta.Tasks = nil

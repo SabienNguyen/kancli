@@ -106,8 +106,8 @@ var opNames = []string{
 	"add", "add", "add", "update", "move", "move", "reorder", "delete", "archive", "restore", "archiveDone",
 	"comment", "check", "toggle", "uncheck", "attach", "detach",
 	"addcol", "updcol", "rmcol", "mvcol",
-	"link", "unlink",
-	"board", "rename", "describe", "activate", "rmboard",
+	"link", "unlink", "xlink", "xunlink",
+	"board", "rename", "describe", "kind", "activate", "rmboard",
 	"snap", "undo",
 }
 
@@ -214,12 +214,31 @@ func (g *opGen) step() {
 		if from != nil && to != nil {
 			b.RemoveLinksBetween(from.ID, to.ID)
 		}
+	case "xlink":
+		if ob := g.otherBoard(b); ob != nil {
+			from, to := g.task(b), g.task(ob)
+			if from != nil && to != nil {
+				kind := rapid.SampledFrom([]LinkKind{LinkBlocks, LinkSubtaskOf, LinkRelates}).Draw(rt, "xkind")
+				b.AddLinkTo(from.ID, kind, Ref{Board: ob.ID, ID: to.ID}) //nolint:errcheck // random input may be invalid
+			}
+		}
+	case "xunlink":
+		if ob := g.otherBoard(b); ob != nil {
+			from, to := g.task(b), g.task(ob)
+			if from != nil && to != nil {
+				for _, kind := range []LinkKind{LinkBlocks, LinkSubtaskOf, LinkRelates} {
+					b.RemoveLinkTo(from.ID, kind, Ref{Board: ob.ID, ID: to.ID})
+				}
+			}
+		}
 	case "board":
 		g.f.AddBoard(word.Draw(rt, "board")) //nolint:errcheck
 	case "rename":
 		g.f.RenameBoard(g.board(), word.Draw(rt, "newName")) //nolint:errcheck
 	case "describe":
 		g.f.DescribeBoard(g.board(), word.Draw(rt, "desc")) //nolint:errcheck
+	case "kind":
+		g.f.SetBoardKind(g.board(), rapid.SampledFrom([]string{"", "tasks", "goals", "Goals", "epics"}).Draw(rt, "kind")) //nolint:errcheck // random input may be invalid
 	case "activate":
 		g.f.Activate(g.board()) //nolint:errcheck
 	case "rmboard":
@@ -262,6 +281,20 @@ func (g *opGen) column(b *Board, allowEmpty bool) string {
 		return ""
 	}
 	return b.Columns[rapid.IntRange(0, len(b.Columns)-1).Draw(g.rt, "col")].ID
+}
+
+// otherBoard picks a random board that is not b, or nil when there is none.
+func (g *opGen) otherBoard(b *Board) *Board {
+	var others []*Board
+	for _, ob := range g.f.Boards {
+		if ob != b {
+			others = append(others, ob)
+		}
+	}
+	if len(others) == 0 {
+		return nil
+	}
+	return others[rapid.IntRange(0, len(others)-1).Draw(g.rt, "otherboard")]
 }
 
 func (g *opGen) board() string {

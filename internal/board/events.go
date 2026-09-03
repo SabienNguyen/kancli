@@ -32,6 +32,7 @@ const (
 	EvBoardAdded        EventKind = "board.added"
 	EvBoardRenamed      EventKind = "board.renamed"
 	EvBoardDescribed    EventKind = "board.described"
+	EvBoardKind         EventKind = "board.kind"
 	EvBoardRemoved      EventKind = "board.removed"
 	EvBoardActivated    EventKind = "board.activated"
 	EvBoardRestored     EventKind = "board.restored"
@@ -41,11 +42,24 @@ const (
 	EvLinkRemoved       EventKind = "link.removed"
 )
 
-// EventVersion is written into every event as "v". Bump it when the
-// meaning of an existing kind or its data payload changes; a build
-// refuses to replay events with a higher version than it knows. Events
-// without "v" (written before this field existed) are version 1.
+// EventVersion is the version written into an event's "v" by default:
+// what an unchanged event kind still means. Events without "v" (written
+// before the field existed) are version 1 too.
 const EventVersion = 1
+
+// MaxEventVersion is the highest event version this build understands. A
+// version is per event, not per log: a kind whose meaning changed is
+// stamped with its own version (a cross-board link event is v2, because an
+// older build would replay it against the wrong board), while every other
+// event stays at EventVersion. A build refuses to replay any event with a
+// higher version than this.
+const MaxEventVersion = 2
+
+// LinkEventVersion is stamped on link.added / link.removed events that name
+// another board in "to". Older builds ignore the field and would apply the
+// link to whatever task has that number on the event's own board, so they
+// must refuse the log instead.
+const LinkEventVersion = 2
 
 // ErrNewerEvents wraps every replay failure caused by data this build
 // does not understand, so callers can word the advice.
@@ -103,6 +117,7 @@ func (f *File) Attach() {
 	}
 	for _, b := range f.Boards {
 		b.rec = f.rec
+		b.file = f
 		if b.clock == nil {
 			b.clock = Now
 		}
@@ -189,7 +204,7 @@ func (f *File) EmptyBase() *File {
 		nb := *b
 		nb.Tasks = nil
 		nb.NextID = 1
-		nb.rec, nb.clock, nb.byID = nil, nil, nil
+		nb.rec, nb.clock, nb.byID, nb.file = nil, nil, nil, nil
 		empty.Boards = append(empty.Boards, &nb)
 	}
 	empty.LastSeq, empty.SnapshotAt = 0, time.Time{}
@@ -209,9 +224,9 @@ func (f *File) Pending() []Event {
 // and uses the event's timestamp as "now" so the result matches the
 // original mutation exactly.
 func (f *File) Apply(e Event) error {
-	if e.V > EventVersion {
+	if e.V > MaxEventVersion {
 		return &NewerEventError{Seq: e.Seq, Kind: e.Kind,
-			Detail: fmt.Sprintf("format v%d, this build reads v%d", e.V, EventVersion)}
+			Detail: fmt.Sprintf("format v%d, this build reads v%d", e.V, MaxEventVersion)}
 	}
 	f.Attach()
 	rec := f.rec
@@ -227,6 +242,7 @@ func (f *File) Apply(e Event) error {
 		if f.Board(b.ID) == nil {
 			nb := &b
 			nb.rec = rec
+			nb.file = f
 			nb.clock = Now
 			if len(nb.Columns) == 0 {
 				nb.Columns = DefaultColumns()
@@ -242,6 +258,11 @@ func (f *File) Apply(e Event) error {
 	case EvBoardDescribed:
 		if b := f.Board(e.Board); b != nil {
 			b.Description = e.Text
+		}
+		return nil
+	case EvBoardKind:
+		if b := f.Board(e.Board); b != nil {
+			b.Kind = e.Text
 		}
 		return nil
 	case EvBoardRemoved:
@@ -323,9 +344,9 @@ func (f *File) Apply(e Event) error {
 	case EvColumnMoved:
 		b.MoveColumn(e.From, e.Index)
 	case EvLinkAdded:
-		return ignoreNotFound(b.AddLink(e.Task, LinkKind(e.Text), e.Index))
+		return ignoreNotFound(b.AddLinkTo(e.Task, LinkKind(e.Text), Ref{Board: e.To, ID: e.Index}))
 	case EvLinkRemoved:
-		b.RemoveLink(e.Task, LinkKind(e.Text), e.Index)
+		b.RemoveLinkTo(e.Task, LinkKind(e.Text), Ref{Board: e.To, ID: e.Index})
 	case EvTaskReverted:
 		var t Task
 		if err := json.Unmarshal(e.Data, &t); err != nil {
@@ -339,14 +360,15 @@ func (f *File) Apply(e Event) error {
 		}
 		// Board settings only: b.Tasks is untouched, so the id index stays
 		// valid.
-		b.Name, b.Description, b.Columns, b.NextID = nb.Name, nb.Description, nb.Columns, nb.NextID
+		b.Name, b.Description, b.Kind = nb.Name, nb.Description, nb.Kind
+		b.Columns, b.NextID = nb.Columns, nb.NextID
 		b.touch()
 	case EvBoardRestored:
 		var nb Board
 		if err := json.Unmarshal(e.Data, &nb); err != nil {
 			return err
 		}
-		nb.rec, nb.clock = b.rec, prevClock
+		nb.rec, nb.clock, nb.file = b.rec, prevClock, b.file
 		nb.gen = b.gen + 1
 		nb.byID = nil // a whole new task slice: rebuild on next lookup
 		*b = nb
@@ -447,6 +469,11 @@ func (e Event) Describe(f *File) string {
 			return "cleared the board description"
 		}
 		return fmt.Sprintf("described board: %q", e.Text)
+	case EvBoardKind:
+		if e.Text == BoardKindGoals {
+			return "made board a goal board"
+		}
+		return "made board a task board"
 	case EvBoardRemoved:
 		return "deleted board " + e.Board
 	case EvBoardActivated:
@@ -458,9 +485,9 @@ func (e Event) Describe(f *File) string {
 	case EvBoardReverted:
 		return "reverted board settings"
 	case EvLinkAdded:
-		return fmt.Sprintf("linked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
+		return fmt.Sprintf("linked %s %s %s", ref, kindVerb(LinkKind(e.Text)), Ref{Board: e.To, ID: e.Index})
 	case EvLinkRemoved:
-		return fmt.Sprintf("unlinked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
+		return fmt.Sprintf("unlinked %s %s %s", ref, kindVerb(LinkKind(e.Text)), Ref{Board: e.To, ID: e.Index})
 	}
 	return string(e.Kind)
 }

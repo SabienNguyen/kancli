@@ -370,19 +370,19 @@ func (c *cli) rmCmd() *cobra.Command {
 func (c *cli) linkCmd() *cobra.Command {
 	kinds := fixed("blocks", "blocked-by", "subtask-of", "parent-of", "relates")
 	return &cobra.Command{
-		Use:               "link <id> <blocks|blocked-by|subtask-of|parent-of|relates> <id>",
-		Short:             "Link two tasks",
+		Use:               "link <ref> <blocks|blocked-by|subtask-of|parent-of|relates> <ref>",
+		Short:             "Link two tasks, on this board or across boards",
 		GroupID:           groupTasks,
 		Args:              cobra.ExactArgs(3),
 		ValidArgsFunction: positional(c.completeTasks, kinds, c.completeTasks),
-		Example:           "  kancli link 12 blocked-by 7\n  kancli link 3 subtask-of 2",
+		Example:           "  kancli link 12 blocked-by 7\n  kancli link 3 subtask-of 2\n  kancli link 12 subtask-of roadmap#3",
 		RunE:              c.wrap("link", func(_ *cobra.Command, args []string) error { return c.link(args) }),
 	}
 }
 
 func (c *cli) unlinkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:               "unlink <id> <id>",
+		Use:               "unlink <ref> <ref>",
 		Short:             "Remove every link between two tasks",
 		GroupID:           groupTasks,
 		Args:              cobra.ExactArgs(2),
@@ -528,22 +528,24 @@ func (c *cli) boardsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "boards",
 		Aliases: []string{"board"},
-		Short:   "List boards, or manage them with new, use, rename, describe and rm",
+		Short:   "List boards, or manage them with new, use, rename, describe, kind and rm",
 		GroupID: groupBoards,
 		Args:    cobra.NoArgs,
 		RunE:    c.wrap("boards", func(*cobra.Command, []string) error { return c.boardsList() }),
 	}
 	var newDesc string
+	var newGoals bool
 	boardsNew := &cobra.Command{
 		Use:     "new <name>",
 		Aliases: []string{"add"},
 		Short:   "Create a board and switch to it",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: c.wrap("boards new", func(_ *cobra.Command, args []string) error {
-			return c.boardsNew(strings.Join(args, " "), newDesc)
+			return c.boardsNew(strings.Join(args, " "), newDesc, newGoals)
 		}),
 	}
 	boardsNew.Flags().StringVar(&newDesc, "desc", "", "description")
+	boardsNew.Flags().BoolVar(&newGoals, "goals", false, "make it a goal board")
 
 	cmd.AddCommand(
 		boardsNew,
@@ -561,6 +563,14 @@ func (c *cli) boardsCmd() *cobra.Command {
 			Args:              cobra.ExactArgs(2),
 			ValidArgsFunction: positional(c.completeBoards),
 			RunE:              c.wrap("boards rename", func(_ *cobra.Command, args []string) error { return c.boardsRename(args[0], args[1]) }),
+		},
+		&cobra.Command{
+			Use:               "kind <board> <goals|tasks>",
+			Short:             "Make a board a goal board or a task board",
+			Args:              cobra.ExactArgs(2),
+			ValidArgsFunction: positional(c.completeBoards, fixed("goals", "tasks")),
+			Example:           "  kancli boards kind roadmap goals",
+			RunE:              c.wrap("boards kind", func(_ *cobra.Command, args []string) error { return c.boardsKind(args[0], args[1]) }),
 		},
 		&cobra.Command{
 			Use:               "describe <board> <text...>",

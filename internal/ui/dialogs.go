@@ -213,11 +213,13 @@ func (p picker) update(msg tea.Msg) (picker, tea.Cmd) {
 func (p picker) view() string {
 	var bindings []key.Binding
 	if p.kind == pickerBoards {
-		bindings = []key.Binding{p.keys.Select, p.keys.New, p.keys.Rename, p.keys.Describe, p.keys.Delete, p.keys.Back}
+		bindings = []key.Binding{p.keys.Select, p.keys.New, p.keys.Rename, p.keys.Describe, p.keys.Kind, p.keys.Delete, p.keys.Back}
 	} else {
 		bindings = []key.Binding{p.keys.Restore, p.keys.Delete, p.keys.Back}
 	}
-	footer := p.help.ShortHelpView(bindings)
+	// The help model overflows its width by up to one item, which would
+	// widen the whole dialog past the terminal.
+	footer := lipgloss.NewStyle().MaxWidth(max(1, p.help.Width)).Render(p.help.ShortHelpView(bindings))
 	body := lipgloss.JoinVertical(lipgloss.Left, p.list.View(), "", footer)
 	s := p.st.column.BorderForeground(p.st.th.accent)
 	return s.Render(body)
@@ -228,6 +230,9 @@ func boardItems(f *board.File) []pickItem {
 	for _, b := range f.Boards {
 		live := len(b.Live())
 		desc := fmt.Sprintf("%d task%s, %d column%s", live, board.Plural(live), len(b.Columns), board.Plural(len(b.Columns)))
+		if b.IsGoals() {
+			desc = "goals · " + desc
+		}
 		if b.ID == f.ActiveBoard {
 			desc += " (current)"
 		}

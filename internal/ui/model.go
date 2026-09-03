@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -415,7 +414,7 @@ func describeTargets(m *App, ids []int) string {
 	if len(ids) == 1 {
 		return fmt.Sprintf("%q", m.taskTitle(ids[0]))
 	}
-	return fmt.Sprintf("%d tasks", len(ids))
+	return fmt.Sprintf("%d %ss", len(ids), m.board.Noun())
 }
 
 // --- layout ---------------------------------------------------------------
@@ -821,7 +820,7 @@ func (m App) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, k.ArchiveView):
-		m.pick = newPicker(pickerArchive, "Archived tasks", archiveItems(m.board, m.g), m.st)
+		m.pick = newPicker(pickerArchive, "Archived "+m.board.Noun()+"s", archiveItems(m.board, m.g), m.st)
 		m.pick.setSize(m.width, m.pickerHeight())
 		m.state = statePicker
 		return m, nil
@@ -832,8 +831,8 @@ func (m App) handleBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.setStatus("Nothing to archive")
 		}
 		n := m.board.CountIn(done.ID)
-		m.confirm = newConfirm(confirmArchiveDone, "Archive all done tasks?", m.st,
-			fmt.Sprintf("%d task%s in %s will be moved to the archive.", n, board.Plural(n), done.Name))
+		m.confirm = newConfirm(confirmArchiveDone, "Archive all done "+m.board.Noun()+"s?", m.st,
+			fmt.Sprintf("%d %s%s in %s will be moved to the archive.", n, m.board.Noun(), board.Plural(n), done.Name))
 		m.back = stateBoard
 		m.state = stateConfirm
 		return m, nil
@@ -981,9 +980,9 @@ func (m App) askDeleteTasks(ids []int, back viewState) (tea.Model, tea.Cmd) {
 		lines = append(lines, m.st.strong.Render(fmt.Sprintf("#%d %s", id, m.taskTitle(id))))
 	}
 	lines = append(lines, m.st.muted.Render("Tip: a archives instead of deleting."))
-	m.confirm = newConfirm(confirmDeleteTasks, "Delete task?", m.st, lines...)
+	m.confirm = newConfirm(confirmDeleteTasks, "Delete "+m.board.Noun()+"?", m.st, lines...)
 	if len(ids) > 1 {
-		m.confirm.title = fmt.Sprintf("Delete %d tasks?", len(ids))
+		m.confirm.title = fmt.Sprintf("Delete %d %ss?", len(ids), m.board.Noun())
 	}
 	m.confirm.taskIDs = ids
 	m.back = back
@@ -1060,37 +1059,89 @@ func (m *App) doneWarning(ids []int, target *board.Column) string {
 		if fin, total := m.board.SubtaskProgress(id); total > 0 && fin < total {
 			return fmt.Sprintf("Moved #%d to %s with %d open subtask%s", id, target.Name, total-fin, board.Plural(total-fin))
 		}
-		if bl := m.board.Blockers(id); len(bl) > 0 {
-			return fmt.Sprintf("Moved #%d to %s while still blocked by %s", id, target.Name, bl[0].Ref())
+		if bl := m.board.BlockerRefs(id); len(bl) > 0 {
+			return fmt.Sprintf("Moved #%d to %s while still blocked by %s", id, target.Name, bl[0])
 		}
 	}
 	return ""
 }
 
-// parseLinkInput reads "blocks 15" style text typed in the link prompt.
-func parseLinkInput(from int, text string) (int, board.LinkKind, int, error) {
+// parseLinkInput reads "blocks 15" style text typed in the link prompt. The
+// target may name another board ("blocked-by work#2"). It returns the two
+// ends of the stored link, which the inverse words swap: "blocked-by
+// work#2" typed on #5 is stored as work#2 blocks #5.
+func parseLinkInput(from int, text string, cur *board.Board, f *board.File) (board.Ref, board.LinkKind, board.Ref, error) {
 	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) < 2 {
-		return 0, "", 0, fmt.Errorf("type a kind and a task number, e.g. blocks 15")
+		return board.Ref{}, "", board.Ref{}, fmt.Errorf("type a kind and a task number, e.g. blocks 15")
 	}
-	last := strings.TrimPrefix(fields[len(fields)-1], "#")
-	to, err := strconv.Atoi(last)
+	target, err := board.ParseRef(fields[len(fields)-1], cur, f)
 	if err != nil {
-		return 0, "", 0, fmt.Errorf("%q is not a task number", fields[len(fields)-1])
+		return board.Ref{}, "", board.Ref{}, err
 	}
-	return board.ParseLinkSpec(from, strings.Join(fields[:len(fields)-1], " "), to)
+	// The two sentinels only report which way ParseLinkSpec turns the words.
+	src, kind, _, err := board.ParseLinkSpec(1, strings.Join(fields[:len(fields)-1], " "), 2)
+	if err != nil {
+		return board.Ref{}, "", board.Ref{}, err
+	}
+	me := board.Ref{ID: from}
+	if src == 1 {
+		return me, kind, target, nil
+	}
+	return target, kind, me, nil
 }
 
-// linkWord phrases a stored link from the point of view of task ref.
-func linkWord(from int, kind board.LinkKind, ref int) string {
+// addLinkRef stores a link whose source may live on another board.
+func (m *App) addLinkRef(from board.Ref, kind board.LinkKind, to board.Ref) error {
+	src := m.board
+	if from.Board != "" {
+		src = m.file.Board(from.Board)
+		if src == nil {
+			return fmt.Errorf("no board %q", from.Board)
+		}
+	}
+	// Seen from another board, "the current board" needs spelling out.
+	if to.Board == "" && src.ID != m.board.ID {
+		to.Board = m.board.ID
+	}
+	return src.AddLinkTo(from.ID, kind, to)
+}
+
+// linkBoard names the board a link would be stored on when it is not the
+// current one, and nil when the link stays here.
+func (m *App) linkBoard(from board.Ref) *board.Board {
+	if from.Board == "" || from.Board == m.board.ID {
+		return nil
+	}
+	return m.file.Board(from.Board)
+}
+
+// relBoard is the board that holds the other end of a relation.
+func (m *App) relBoard(r board.Relation) *board.Board {
+	if r.Board == "" || r.Board == m.board.ID {
+		return m.board
+	}
+	return m.file.Board(r.Board)
+}
+
+// boardName names a board for a status message, falling back to its id.
+func boardName(b *board.Board) string {
+	if b.Name != "" {
+		return b.Name
+	}
+	return b.ID
+}
+
+// linkWord phrases a stored link from the point of view of its source.
+func linkWord(kind board.LinkKind, outgoing bool) string {
 	switch kind {
 	case board.LinkBlocks:
-		if from == ref {
+		if outgoing {
 			return "blocks"
 		}
 		return "is blocked by"
 	case board.LinkSubtaskOf:
-		if from == ref {
+		if outgoing {
 			return "is a subtask of"
 		}
 		return "is the parent of"
@@ -1190,14 +1241,14 @@ func (m App) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case confirmArchiveDone:
 		m.snapshot()
 		n := m.board.ArchiveDone()
-		return m, m.changed("Archived %d task%s", n, board.Plural(n))
+		return m, m.changed("Archived %d %s%s", n, m.board.Noun(), board.Plural(n))
 	case confirmDeleteArchived:
 		m.snapshot()
 		for _, id := range c.taskIDs {
 			m.board.DeleteTask(id)
 		}
 		cmd := m.changed("Deleted %s permanently", describeTargets(&m, c.taskIDs))
-		m.pick = newPicker(pickerArchive, "Archived tasks", archiveItems(m.board, m.g), m.st)
+		m.pick = newPicker(pickerArchive, "Archived "+m.board.Noun()+"s", archiveItems(m.board, m.g), m.st)
 		m.pick.setSize(m.width, m.pickerHeight())
 		return m, cmd
 	}
@@ -1230,14 +1281,14 @@ func (m App) handleFormSubmit(msg formSubmitMsg) (tea.Model, tea.Cmd) {
 		t = *added
 		what = "Added"
 		if sim := board.SimilarTasks(m.board, t.Title, t.ID, 1); len(sim) > 0 {
-			cmd := m.changed("Added %s %q", t.Ref(), t.Title)
-			return m, tea.Batch(cmd, m.setStatus("Added %s. Similar to %s %q", t.Ref(), sim[0].Task.Ref(), sim[0].Task.Title))
+			cmd := m.changed("Added %s %s %q", m.board.Noun(), t.Ref(), t.Title)
+			return m, tea.Batch(cmd, m.setStatus("Added %s %s. Similar to %s %q", m.board.Noun(), t.Ref(), sim[0].Task.Ref(), sim[0].Task.Title))
 		}
 	}
 	if m.state == stateDetail {
 		m.renderDetail()
 	}
-	return m, m.changed("%s %s %q", what, t.Ref(), t.Title)
+	return m, m.changed("%s %s %s %q", what, m.board.Noun(), t.Ref(), t.Title)
 }
 
 func (m App) handleColumnFormSubmit(msg colFormSubmitMsg) (tea.Model, tea.Cmd) {
@@ -1338,14 +1389,21 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 			m.renderDetail()
 			return m, nil
 		}
-		from, kind, to, err := parseLinkInput(msg.ref, text)
+		from, kind, to, err := parseLinkInput(msg.ref, text, m.board, m.file)
 		if err != nil {
 			m.renderDetail()
 			return m, m.setStatus("%v", err)
 		}
-		m.snapshot()
-		if err := m.board.AddLink(from, kind, to); err != nil {
-			m.dropSnapshot()
+		// A link is stored on its source task; when that is a task on
+		// another board, this board's snapshot cannot undo it.
+		elsewhere := m.linkBoard(from)
+		if elsewhere == nil {
+			m.snapshot()
+		}
+		if err := m.addLinkRef(from, kind, to); err != nil {
+			if elsewhere == nil {
+				m.dropSnapshot()
+			}
 			m.renderDetail()
 			return m, m.setStatus("%v", err)
 		}
@@ -1353,11 +1411,16 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		// parseLinkInput normalises the inverse kinds, so "blocked-by #2"
 		// typed on task 1 is stored as 2 blocks 1. Name whichever endpoint
 		// is not the task the prompt was opened on, never ref twice.
+		outgoing := from.Board == "" && from.ID == msg.ref
 		other := to
-		if from != msg.ref {
+		if !outgoing {
 			other = from
 		}
-		return m, m.changed("Linked #%d %s #%d", msg.ref, linkWord(from, kind, msg.ref), other)
+		if elsewhere != nil {
+			return m, m.changed("Linked #%d %s %s (on %s, not undoable here)",
+				msg.ref, linkWord(kind, outgoing), other, boardName(elsewhere))
+		}
+		return m, m.changed("Linked #%d %s %s", msg.ref, linkWord(kind, outgoing), other)
 	case promptAttachment:
 		if text == "" {
 			m.renderDetail()
@@ -1431,14 +1494,36 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, m.setStatus("Select an item with tab first")
 			}
-			m.snapshot()
-			if r.Outgoing {
-				m.board.RemoveLink(id, r.Kind, r.Task.ID)
-			} else {
-				m.board.RemoveLink(r.Task.ID, r.Kind, id)
+			other := board.Ref{Board: r.Board, ID: r.Task.ID}
+			src, from, to := m.board, id, other
+			if !r.Outgoing {
+				// An incoming relation is stored on the other task, so it
+				// is removed on the board that holds that task.
+				src, from, to = m.relBoard(r), r.Task.ID, board.Ref{ID: id}
+				if src != m.board {
+					to.Board = m.board.ID
+				}
+			}
+			if src == nil {
+				return m, m.setStatus("No board %q", r.Board)
+			}
+			// Undo is per board, so a link another board stores is outside
+			// it: no snapshot, and the status says as much.
+			if src == m.board {
+				m.snapshot()
+			}
+			if !src.RemoveLinkTo(from, r.Kind, to) {
+				if src == m.board {
+					m.dropSnapshot()
+				}
+				m.renderDetail()
+				return m, m.setStatus("No link to %s left to remove", other)
 			}
 			m.renderDetail()
-			return m, m.changed("Unlinked %s", r.Task.Ref())
+			if src != m.board {
+				return m, m.changed("Unlinked %s (on %s, not undoable here)", other, boardName(src))
+			}
+			return m, m.changed("Unlinked %s", other)
 		}
 		m.renderDetail()
 		return m, m.changed("Removed item")
@@ -1451,6 +1536,17 @@ func (m App) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.setStatus("No links on this task")
 			}
 			r = m.detail.links[0]
+		}
+		if r.Board != "" && r.Board != m.board.ID {
+			other := m.file.Board(r.Board)
+			if other == nil {
+				return m, m.setStatus("No board %q", r.Board)
+			}
+			name := other.Name
+			cmd := m.switchBoard(r.Board)
+			mm, c := m.openDetail(r.Task.ID)
+			app := mm.(App)
+			return app, tea.Batch(cmd, c, app.setStatus("Switched to %s", name))
 		}
 		return m.openDetail(r.Task.ID)
 	case key.Matches(msg, k.AddItem):
@@ -1542,7 +1638,8 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	item, ok := m.pick.selected()
-	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Describe) || key.Matches(msg, k.Delete) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
+	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Describe) || key.Matches(msg, k.Delete) ||
+		(m.pick.kind == pickerBoards && key.Matches(msg, k.Kind)) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
 		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
 	}
 	if m.pick.kind == pickerBoards {
@@ -1569,6 +1666,32 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				initial = b.Description
 			}
 			return m.openPrompt(promptDescribeBoard, "Board description (empty clears)", initial, 0, item.id, statePicker)
+		case key.Matches(msg, k.Kind):
+			if !ok {
+				return m, nil
+			}
+			b := m.file.Board(item.id)
+			if b == nil {
+				return m, nil
+			}
+			kind, what := board.BoardKindGoals, "a goal board"
+			if b.IsGoals() {
+				kind, what = board.BoardKindTasks, "a task board"
+			}
+			// Undo is per board, so only the active board can be restored.
+			active := item.id == m.board.ID
+			if active {
+				m.snapshot()
+			}
+			if err := m.file.SetBoardKind(item.id, kind); err != nil {
+				if active {
+					m.dropSnapshot()
+				}
+				return m, m.setStatus("%v", err)
+			}
+			m.persist()
+			m.openBoardPicker(item.id)
+			return m, m.setStatus("%s is now %s", b.Name, what)
 		case key.Matches(msg, k.Delete):
 			if !ok {
 				return m, nil
@@ -1579,7 +1702,7 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			b := m.file.Board(item.id)
 			n := len(b.Tasks)
 			m.confirm = newConfirm(confirmDeleteBoard, "Delete board?", m.st,
-				m.st.strong.Render(b.Name), fmt.Sprintf("%d task%s will be deleted permanently.", n, board.Plural(n)))
+				m.st.strong.Render(b.Name), fmt.Sprintf("%d %s%s will be deleted permanently.", n, b.Noun(), board.Plural(n)))
 			m.confirm.sref = item.id
 			m.back = statePicker
 			m.state = stateConfirm
@@ -1593,7 +1716,7 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.snapshot()
 			m.board.RestoreTask(item.num)
-			m.pick = newPicker(pickerArchive, "Archived tasks", archiveItems(m.board, m.g), m.st)
+			m.pick = newPicker(pickerArchive, "Archived "+m.board.Noun()+"s", archiveItems(m.board, m.g), m.st)
 			m.pick.setSize(m.width, m.pickerHeight())
 			return m, m.changed("Restored #%d", item.num)
 		case key.Matches(msg, k.Delete):
@@ -1775,6 +1898,9 @@ func (m App) dueSummary() string {
 
 func (m App) headerView() string {
 	left := " " + m.st.appTitle.Render("Kancli") + m.st.muted.Render(" "+m.g.dot+" ") + m.st.strong.Render(m.board.Name)
+	if m.board.IsGoals() {
+		left += m.st.muted.Render(" " + m.g.dot + " goals")
+	}
 	if len(m.marks) > 0 {
 		left += m.st.muted.Render(fmt.Sprintf("  %d marked", len(m.marks)))
 	}
@@ -1841,9 +1967,9 @@ func (m App) footerView() string {
 		// Leave at least half of the screen to the board; the columns do not
 		// shrink below about eight rows, so a larger share overflows 18-row
 		// terminals.
-		body = fullHelp(m.keys.FullHelp(), inner, max(3, m.height/2), m.help.Styles.FullKey, m.help.Styles.FullDesc, m.help.Styles.Ellipsis)
+		body = fullHelp(m.keys.forBoard(m.board).FullHelp(), inner, max(3, m.height/2), m.help.Styles.FullKey, m.help.Styles.FullDesc, m.help.Styles.Ellipsis)
 	} else {
-		body = m.help.View(m.keys)
+		body = m.help.View(m.keys.forBoard(m.board))
 	}
 	return m.st.help.Render(lipgloss.NewStyle().MaxWidth(inner).Render(body))
 }

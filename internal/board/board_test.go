@@ -404,13 +404,14 @@ func TestDaysBetweenAcrossDST(t *testing.T) {
 func stateOf(f *File) string {
 	type row struct {
 		Board   string
+		Kind    string
 		Columns []Column
 		Tasks   []Task
 		Active  string
 	}
 	var rows []row
 	for _, b := range f.Boards {
-		rows = append(rows, row{b.ID, b.Columns, b.Tasks, f.ActiveBoard})
+		rows = append(rows, row{b.ID, b.Kind, b.Columns, b.Tasks, f.ActiveBoard})
 	}
 	data, _ := json.Marshal(rows)
 	return string(data)
@@ -750,7 +751,7 @@ func TestReplayRefusesNewerEvents(t *testing.T) {
 	if !strings.Contains(err.Error(), "task.teleported") {
 		t.Errorf("message should name the kind: %v", err)
 	}
-	future := Event{Seq: 1, Board: b.ID, Kind: EvTaskDeleted, Task: 1, V: EventVersion + 1}
+	future := Event{Seq: 1, Board: b.ID, Kind: EvTaskDeleted, Task: 1, V: MaxEventVersion + 1}
 	err = f.Replay([]Event{future})
 	if !errors.Is(err, ErrNewerEvents) {
 		t.Fatalf("newer v: err = %v, want ErrNewerEvents", err)
@@ -1060,5 +1061,119 @@ func TestStatsWalkerFollowsUndo(t *testing.T) {
 	incJSON, _ := json.Marshal(inc.Finish(b, now, 90))
 	if string(fullJSON) != string(incJSON) {
 		t.Errorf("incremental stats differ from a full walk:\n%s\n%s", incJSON, fullJSON)
+	}
+}
+
+// TestBoardKind covers the goal-board flag end to end: setting it, the
+// no-op and invalid cases, the event it emits, replay, undo through
+// Replace, and the wording helpers.
+func TestBoardKind(t *testing.T) {
+	f := NewFile()
+	f.Attach()
+	b := f.Boards[0]
+
+	// A new board is a ticket board and says so without storing anything.
+	if b.Kind != "" || b.IsGoals() || b.Noun() != "task" {
+		t.Fatalf("fresh board: kind %q goals %v noun %q", b.Kind, b.IsGoals(), b.Noun())
+	}
+	if data, _ := json.Marshal(b); strings.Contains(string(data), "kind") {
+		t.Errorf("a ticket board should not write kind: %s", data)
+	}
+
+	// Setting it accepts surrounding space and any case.
+	if err := f.SetBoardKind(b.ID, "  Goals "); err != nil {
+		t.Fatalf("set goals: %v", err)
+	}
+	if b.Kind != BoardKindGoals || !b.IsGoals() || b.Noun() != "goal" {
+		t.Fatalf("goal board: kind %q goals %v noun %q", b.Kind, b.IsGoals(), b.Noun())
+	}
+	events := f.Pending()
+	if len(events) != 1 || events[0].Kind != EvBoardKind || events[0].Board != b.ID || events[0].Text != BoardKindGoals {
+		t.Fatalf("events = %+v", events)
+	}
+	if s := events[0].Describe(f); s != "made board a goal board" {
+		t.Errorf("Describe = %q", s)
+	}
+
+	// The same kind again changes nothing and emits nothing.
+	if err := f.SetBoardKind(b.ID, BoardKindGoals); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Pending(); len(got) != 0 {
+		t.Errorf("re-setting the same kind emitted %+v", got)
+	}
+
+	// Unknown kinds and unknown boards are refused.
+	if err := f.SetBoardKind(b.ID, "epics"); err == nil || err.Error() != `board kind must be "tasks" or "goals"` {
+		t.Errorf("invalid kind error = %v", err)
+	}
+	if err := f.SetBoardKind("nope", BoardKindGoals); err == nil {
+		t.Error("unknown board should fail")
+	}
+	if b.Kind != BoardKindGoals {
+		t.Errorf("a refused change touched the board: %q", b.Kind)
+	}
+
+	// Replay reproduces the goal board, and the JSON carries the kind.
+	fresh := NewFile()
+	fresh.Boards[0].ID = b.ID
+	if err := fresh.Replay(events); err != nil || !fresh.Boards[0].IsGoals() {
+		t.Fatalf("replay: %q %v", fresh.Boards[0].Kind, err)
+	}
+	data, _ := json.Marshal(f)
+	back, err := Decode(data)
+	if err != nil || back.Boards[0].Kind != BoardKindGoals {
+		t.Fatalf("round trip: %q %v", back.Boards[0].Kind, err)
+	}
+
+	// Going back to a ticket board stores "" so old files stay unchanged.
+	if err := f.SetBoardKind(b.ID, " TASKS "); err != nil {
+		t.Fatal(err)
+	}
+	if b.Kind != "" || b.IsGoals() {
+		t.Fatalf("back to tasks: %q", b.Kind)
+	}
+	events = f.Pending()
+	if len(events) != 1 || events[0].Kind != EvBoardKind || events[0].Text != "" {
+		t.Fatalf("events = %+v", events)
+	}
+	if s := events[0].Describe(f); s != "made board a task board" {
+		t.Errorf("Describe = %q", s)
+	}
+	if err := fresh.Replay(events); err != nil || fresh.Boards[0].Kind != "" {
+		t.Fatalf("replay back to tasks: %q %v", fresh.Boards[0].Kind, err)
+	}
+	// The empty kind is also what "" means.
+	if err := f.SetBoardKind(b.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Pending(); len(got) != 0 {
+		t.Errorf("empty kind on a ticket board emitted %+v", got)
+	}
+
+	// Undo: a snapshot of the ticket board, a change to goals, then
+	// Replace restores it through a board.reverted event.
+	snapshot, _ := json.Marshal(*b)
+	if err := f.SetBoardKind(b.ID, BoardKindGoals); err != nil {
+		t.Fatal(err)
+	}
+	f.Pending()
+	var prev Board
+	if err := json.Unmarshal(snapshot, &prev); err != nil {
+		t.Fatal(err)
+	}
+	b.Replace(prev)
+	if b.Kind != "" {
+		t.Fatalf("undo did not restore the kind: %q", b.Kind)
+	}
+	undo := f.Pending()
+	if len(undo) != 1 || undo[0].Kind != EvBoardReverted {
+		t.Fatalf("undo events = %+v", undo)
+	}
+	goals := NewFile()
+	goals.Boards[0].ID = b.ID
+	goals.Boards[0].Kind = BoardKindGoals
+	if err := goals.Replay(undo); err != nil || goals.Boards[0].Kind != "" {
+		t.Fatalf("replaying the undo: %q %v", goals.Boards[0].Kind, err)
 	}
 }

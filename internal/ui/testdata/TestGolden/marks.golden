@@ -4,11 +4,11 @@
 │                                      ││                                      ││                                      │
 │   ✓ #1 ↑ Write the release notes     ││ │ #5 ‼ Ship the CLI subcommands      ││ │ #7 Upgrade to Bubble Tea v1        │
 │   Cover the new search syntax, undo… ││ │ add, list, move, done, export and… ││ │                                    │
-│   tomorrow · @sam · +docs · ☑ 1/3 ·… ││ │ today · @sam · +feature · 1 comme… ││ │ +chore                             │
+│   tomorrow · @sam · +docs · ☑ 1/3 ·… ││ │ today · @sam · +feature · ↳ roadm… ││ │ +chore                             │
 │                                      ││                                      ││                                      │
 │   #2 • Fix the flaky terminal resiz… ││   #6 • Review the mouse support PR   ││   #8 ↓ Stay cool                     │
 │                                      ││                                      ││   as a cucumber                      │
-│   2d overdue · +bug · +tests         ││   in 3d · @alex · +review            ││                                      │
+│   2d overdue · +bug · +tests         ││   in 3d · @alex · +review            ││   ↳ roadmap#1                        │
 │                                      ││                                      ││                                      │
 │   ✓ #3 Buy milk                      ││                                      ││                                      │
 │   strawberry milk                    ││                                      ││                                      │
@@ -16,7 +16,7 @@
 │                                      ││                                      ││                                      │
 │ │ #4 ↓ Plan the team offsite         ││                                      ││                                      │
 │ │ Venue, agenda and travel.          ││                                      ││                                      │
-│ │ Sep 14 · @alex · +planning         ││                                      ││                                      │
+│ │ Sep 14 · @alex · +planning · ↳ ro… ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │
 │                                      ││                                      ││                                      │

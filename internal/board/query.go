@@ -24,9 +24,9 @@ type Query struct {
 	due       string
 	column    string
 	blocked   string // "yes" or "no"
-	blocks    int    // tasks that block this id
-	blockedBy int    // tasks blocked by this id
-	parent    int    // subtasks of this id
+	blocks    Ref    // tasks that block this ref
+	blockedBy Ref    // tasks blocked by this ref
+	parent    Ref    // subtasks of this ref
 	has       []string
 }
 
@@ -73,18 +73,18 @@ func ParseQuery(s string) Query {
 					continue
 				}
 			case "blocks":
-				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
-					q.blocks = n
+				if r, ok := parseFilterRef(val); ok {
+					q.blocks = r
 					continue
 				}
 			case "blockedby", "blocked-by", "blocked_by":
-				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
-					q.blockedBy = n
+				if r, ok := parseFilterRef(val); ok {
+					q.blockedBy = r
 					continue
 				}
 			case "parent", "subtaskof", "subtask-of", "subtask_of":
-				if n, err := strconv.Atoi(strings.TrimPrefix(val, "#")); err == nil {
-					q.parent = n
+				if r, ok := parseFilterRef(val); ok {
+					q.parent = r
 					continue
 				}
 			case "has":
@@ -102,17 +102,39 @@ func ParseQuery(s string) Query {
 
 func (q Query) Empty() bool {
 	return len(q.Words) == 0 && len(q.ids) == 0 && q.assignee == "" && len(q.labels) == 0 &&
-		q.priority == nil && q.due == "" && q.column == "" && q.blocked == "" && q.blocks == 0 &&
-		q.blockedBy == 0 && q.parent == 0 && len(q.has) == 0
+		q.priority == nil && q.due == "" && q.column == "" && q.blocked == "" && q.blocks.ID == 0 &&
+		q.blockedBy.ID == 0 && q.parent.ID == 0 && len(q.has) == 0
 }
 
-func hasLinkTo(t Task, kind LinkKind, id int) bool {
-	for _, l := range t.Links {
-		if l.Kind == kind && l.Task == id {
-			return true
-		}
+// parseFilterRef reads the value of a link filter: "12", "#12" or
+// "work#12". The board is kept as typed and resolved against the searched
+// board's file in Matches, because a query is parsed without one.
+func parseFilterRef(val string) (Ref, bool) {
+	name, num, hasHash := strings.Cut(val, "#")
+	if !hasHash {
+		name, num = "", name
 	}
-	return false
+	n, err := strconv.Atoi(num)
+	if err != nil || n <= 0 {
+		return Ref{}, false
+	}
+	if name != "" && !boardWordRE.MatchString(name) {
+		return Ref{}, false
+	}
+	return Ref{Board: name, ID: n}, true
+}
+
+// resolveFilterRef turns a filter ref into one relative to b. It fails when
+// the board it names is unknown, and then nothing matches.
+func resolveFilterRef(b *Board, r Ref) (Ref, bool) {
+	if r.Board == "" {
+		return r, true
+	}
+	out, err := ParseRef(r.String(), b, b.file)
+	if err != nil {
+		return Ref{}, false
+	}
+	return out, true
 }
 
 // matches reports whether a task satisfies the query.
@@ -145,14 +167,27 @@ func (q Query) Matches(b *Board, t Task, now time.Time) bool {
 	if q.blocked == "no" && b.IsBlocked(t.ID) {
 		return false
 	}
-	if q.blocks != 0 && !hasLinkTo(t, LinkBlocks, q.blocks) {
-		return false
+	if q.blocks.ID != 0 {
+		r, ok := resolveFilterRef(b, q.blocks)
+		if !ok || !b.taskLinksTo(t, LinkBlocks, r) {
+			return false
+		}
 	}
-	if q.blockedBy != 0 && !b.hasLink(q.blockedBy, LinkBlocks, t.ID) {
-		return false
+	if q.blockedBy.ID != 0 {
+		r, ok := resolveFilterRef(b, q.blockedBy)
+		if !ok {
+			return false
+		}
+		ob, other := b.Resolve(Link{Kind: LinkBlocks, Task: r.ID, Board: r.Board})
+		if other == nil || !ob.taskLinksTo(*other, LinkBlocks, Ref{Board: b.ID, ID: t.ID}) {
+			return false
+		}
 	}
-	if q.parent != 0 && !hasLinkTo(t, LinkSubtaskOf, q.parent) {
-		return false
+	if q.parent.ID != 0 {
+		r, ok := resolveFilterRef(b, q.parent)
+		if !ok || !b.taskLinksTo(t, LinkSubtaskOf, r) {
+			return false
+		}
 	}
 	for _, h := range q.has {
 		switch h {

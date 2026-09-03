@@ -33,7 +33,7 @@ func runCLI(t *testing.T, path string, args ...string) (string, string, int) {
 func TestCLIAddListMoveDone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "board.json")
 	out, errs, code := runCLI(t, path, "add", "-p", "high", "-due", "tomorrow", "-l", "Docs,ops", "-a", "sam", "Write", "docs")
-	if code != 0 || !strings.Contains(out, "#1 added to To Do") {
+	if code != 0 || !strings.Contains(out, "Added task #1 to To Do") {
 		t.Fatalf("add: %d %q %q", code, out, errs)
 	}
 	runCLI(t, path, "add", "-c", "in", "Second task")
@@ -480,5 +480,81 @@ func TestCLIBoardsDescribe(t *testing.T) {
 	out, _, _ = runCLI(t, path, "log")
 	if !strings.Contains(out, "described board") {
 		t.Errorf("log should show the description event:\n%s", out)
+	}
+}
+
+func TestCLIGoalBoards(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	out, errs, code := runCLI(t, path, "boards", "new", "Roadmap", "--goals")
+	if code != 0 || !strings.Contains(out, "Created board") {
+		t.Fatalf("boards new --goals: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "boards")
+	if !strings.Contains(out, "goals") || !strings.Contains(out, "* Roadmap") {
+		t.Fatalf("boards list should mark the goal board:\n%s", out)
+	}
+	out, errs, code = runCLI(t, path, "-b", "roadmap", "add", "Ship 1.0")
+	if code != 0 || !strings.Contains(out, "Added goal #1") {
+		t.Fatalf("add on a goal board: %d %q %q", code, out, errs)
+	}
+	runCLI(t, path, "boards", "use", "main")
+	if out, _, _ := runCLI(t, path, "add", "Fix login"); !strings.Contains(out, "Added task #1") {
+		t.Fatalf("add on a task board: %q", out)
+	}
+	runCLI(t, path, "add", "Write docs")
+
+	// A link from either side, stored on whichever side the words name.
+	if out, errs, code := runCLI(t, path, "link", "1", "subtask-of", "roadmap#1"); code != 0 || !strings.Contains(out, "#1 subtask-of roadmap#1") {
+		t.Fatalf("link to another board: %d %q %q", code, out, errs)
+	}
+	if out, errs, code := runCLI(t, path, "link", "roadmap#1", "parent-of", "2"); code != 0 || !strings.Contains(out, "roadmap#1 parent-of #2") {
+		t.Fatalf("link from another board: %d %q %q", code, out, errs)
+	}
+	for _, id := range []string{"1", "2"} {
+		out, _, _ := runCLI(t, path, "show", id)
+		if !strings.Contains(out, "subtask of  roadmap#1 Ship 1.0") {
+			t.Errorf("show %s should name the foreign parent:\n%s", id, out)
+		}
+	}
+	out, _, _ = runCLI(t, path, "-b", "roadmap", "show", "1")
+	if !strings.Contains(out, "0/2") || !strings.Contains(out, "subtask     main#1 Fix login") {
+		t.Errorf("goal should count both tickets:\n%s", out)
+	}
+	runCLI(t, path, "done", "1")
+	if out, _, _ := runCLI(t, path, "-b", "roadmap", "show", "1"); !strings.Contains(out, "1/2") {
+		t.Errorf("finishing a ticket should show 1/2:\n%s", out)
+	}
+	out, _, _ = runCLI(t, path, "list", "-q", "parent:roadmap#1")
+	if !strings.Contains(out, "Fix login") || !strings.Contains(out, "Write docs") {
+		t.Errorf("parent query across boards:\n%s", out)
+	}
+	runCLI(t, path, "rm", "2")
+	if out, _, _ := runCLI(t, path, "-b", "roadmap", "show", "1"); !strings.Contains(out, "1/1") {
+		t.Errorf("deleting a ticket should drop its link:\n%s", out)
+	}
+	if out, errs, code := runCLI(t, path, "unlink", "1", "roadmap#1"); code != 0 || !strings.Contains(out, "removed 1 link") {
+		t.Fatalf("unlink across boards: %d %q %q", code, out, errs)
+	}
+	if out, _, _ := runCLI(t, path, "-b", "roadmap", "show", "1"); strings.Contains(out, "Fix login") {
+		t.Errorf("the last link should be gone:\n%s", out)
+	}
+
+	// Error cases.
+	if _, errs, code := runCLI(t, path, "link", "1", "subtask-of", "nowhere#1"); code == 0 || !strings.Contains(errs, `no board "nowhere"`) {
+		t.Errorf("unknown board: %d %q", code, errs)
+	}
+	if _, errs, code := runCLI(t, path, "link", "1", "subtask-of", "roadmap#99"); code == 0 || !strings.Contains(errs, "#99") {
+		t.Errorf("unknown task: %d %q", code, errs)
+	}
+
+	// Back to a ticket board.
+	if out, errs, code := runCLI(t, path, "boards", "kind", "roadmap", "tasks"); code != 0 || !strings.Contains(out, `Made "Roadmap" a task board`) {
+		t.Fatalf("boards kind: %d %q %q", code, out, errs)
+	}
+	if out, _, _ := runCLI(t, path, "boards"); strings.Contains(out, "goals") {
+		t.Errorf("boards list still says goals:\n%s", out)
+	}
+	if out, errs, code := runCLI(t, path, "boards", "kind", "roadmap", "goals"); code != 0 || !strings.Contains(out, `Made "Roadmap" a goal board`) {
+		t.Fatalf("boards kind goals: %d %q %q", code, out, errs)
 	}
 }
