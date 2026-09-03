@@ -24,11 +24,12 @@ type File struct {
 
 // Board is one kanban board with its columns and tasks.
 type Board struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Columns []Column `json:"columns"`
-	Tasks   []Task   `json:"tasks"`
-	NextID  int      `json:"next_id"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Columns     []Column `json:"columns"`
+	Tasks       []Task   `json:"tasks"`
+	NextID      int      `json:"next_id"`
 
 	rec   *recorder
 	clock func() time.Time
@@ -309,6 +310,18 @@ func (f *File) RenameBoard(id, name string) error {
 	}
 	b.Name = name
 	f.emit(Event{Kind: EvBoardRenamed, Board: b.ID, Text: name})
+	return nil
+}
+
+// DescribeBoard sets a board's description; empty clears it.
+func (f *File) DescribeBoard(id, text string) error {
+	b := f.Board(id)
+	if b == nil {
+		return fmt.Errorf("no board %q", id)
+	}
+	text = strings.TrimSpace(text)
+	b.Description = text
+	f.emit(Event{Kind: EvBoardDescribed, Board: b.ID, Text: text})
 	return nil
 }
 
