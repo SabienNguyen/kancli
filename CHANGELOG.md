@@ -4,6 +4,8 @@
 
 ### Added
 
+- Board descriptions: `e` in the board picker, `kancli boards describe`, and
+  `--desc` on `kancli boards new`. Shown in the picker and in `kancli boards`.
 - Safer upgrades: the first run on data from an older kancli copies the old
   files to `board.backups/vN/` and says so; events carry a format version
   and an older kancli refuses to open a newer log with advice to upgrade;

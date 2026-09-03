@@ -442,3 +442,34 @@ func TestCLIColumnsManage(t *testing.T) {
 		t.Errorf("last column must stay: %d %q", code, errs)
 	}
 }
+
+func TestCLIBoardsDescribe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "board.json")
+	out, errs, code := runCLI(t, path, "boards", "new", "Work", "--desc", "Client projects")
+	if code != 0 || !strings.Contains(out, "Created") {
+		t.Fatalf("boards new --desc: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "boards")
+	if !strings.Contains(out, "Client projects") {
+		t.Errorf("boards list should show the description:\n%s", out)
+	}
+	out, errs, code = runCLI(t, path, "boards", "describe", "work", "Invoices", "and", "projects")
+	if code != 0 || !strings.Contains(out, `Described "Work": Invoices and projects`) {
+		t.Fatalf("describe: %d %q %q", code, out, errs)
+	}
+	out, _, _ = runCLI(t, path, "boards")
+	if !strings.Contains(out, "Invoices and projects") || strings.Contains(out, "Client projects") {
+		t.Errorf("description not replaced:\n%s", out)
+	}
+	out, errs, code = runCLI(t, path, "boards", "describe", "work")
+	if code != 0 || !strings.Contains(out, `Cleared the description of "Work"`) {
+		t.Fatalf("clear: %d %q %q", code, out, errs)
+	}
+	if _, errs, code := runCLI(t, path, "boards", "describe", "nope", "x"); code == 0 || !strings.Contains(errs, `no board "nope"`) {
+		t.Errorf("unknown board: %d %q", code, errs)
+	}
+	out, _, _ = runCLI(t, path, "log")
+	if !strings.Contains(out, "described board") {
+		t.Errorf("log should show the description event:\n%s", out)
+	}
+}

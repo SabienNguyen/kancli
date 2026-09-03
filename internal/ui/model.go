@@ -1264,6 +1264,16 @@ func (m App) handlePromptSubmit(msg promptSubmitMsg) (tea.Model, tea.Cmd) {
 		m.persist()
 		m.openBoardPicker(msg.sref)
 		return m, m.setStatus("Renamed board to %q", text)
+	case promptDescribeBoard:
+		if err := m.file.DescribeBoard(msg.sref, text); err != nil {
+			return m, m.setStatus("%v", err)
+		}
+		m.persist()
+		m.openBoardPicker(msg.sref)
+		if text == "" {
+			return m, m.setStatus("Cleared the board description")
+		}
+		return m, m.setStatus("Described board")
 	case promptComment:
 		if text == "" {
 			m.renderDetail()
@@ -1492,7 +1502,7 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	item, ok := m.pick.selected()
-	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Delete) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
+	if m.readOnly && (key.Matches(msg, k.New) || key.Matches(msg, k.Rename) || key.Matches(msg, k.Describe) || key.Matches(msg, k.Delete) || (m.pick.kind == pickerArchive && key.Matches(msg, k.Restore))) {
 		return m, m.setStatus("Read-only view as of %s", m.asOf.Format("Jan 2 15:04"))
 	}
 	if m.pick.kind == pickerBoards {
@@ -1510,6 +1520,15 @@ func (m App) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.openPrompt(promptRenameBoard, "Rename board", item.title, 0, item.id, statePicker)
+		case key.Matches(msg, k.Describe):
+			if !ok {
+				return m, nil
+			}
+			initial := ""
+			if b := m.file.Board(item.id); b != nil {
+				initial = b.Description
+			}
+			return m.openPrompt(promptDescribeBoard, "Board description (empty clears)", initial, 0, item.id, statePicker)
 		case key.Matches(msg, k.Delete):
 			if !ok {
 				return m, nil

@@ -1103,22 +1103,51 @@ func (c *cli) boardsList() error {
 			mark = "*"
 		}
 		n := len(b.Live())
-		fmt.Fprintf(c.stdout, "%s %-20s %d task%s\n", mark, b.Name, n, board.Plural(n))
+		suffix := ""
+		if b.Description != "" {
+			suffix = "  " + b.Description
+		}
+		fmt.Fprintf(c.stdout, "%s %-20s %d task%s%s\n", mark, b.Name, n, board.Plural(n), suffix)
 	}
 	return nil
 }
 
-func (c *cli) boardsNew(name string) error {
+func (c *cli) boardsNew(name, desc string) error {
 	f := c.env.File
 	b, err := f.AddBoard(name)
 	if err != nil {
 		return err
 	}
 	f.Activate(b.ID) //nolint:errcheck // just created
+	if desc != "" {
+		if err := f.DescribeBoard(b.ID, desc); err != nil {
+			return err
+		}
+	}
 	if err := c.Save(); err != nil {
 		return err
 	}
 	fmt.Fprintf(c.stdout, "Created board %q\n", b.Name)
+	return nil
+}
+
+func (c *cli) boardsDescribe(key, text string) error {
+	f := c.env.File
+	b := f.Board(key)
+	if b == nil {
+		return fmt.Errorf("no board %q (see `kancli boards`)", key)
+	}
+	if err := f.DescribeBoard(b.ID, text); err != nil {
+		return err
+	}
+	if err := c.Save(); err != nil {
+		return err
+	}
+	if b.Description == "" {
+		fmt.Fprintf(c.stdout, "Cleared the description of %q\n", b.Name)
+		return nil
+	}
+	fmt.Fprintf(c.stdout, "Described %q: %s\n", b.Name, b.Description)
 	return nil
 }
 

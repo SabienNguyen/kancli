@@ -147,7 +147,7 @@ Flags take one dash or two; `-as-of` and `--as-of` are the same thing.
 | `s`                | Cycle sort: manual, priority, due, created, updated, title |
 | `u` / `U`          | Undo / redo                                   |
 | `S`                | Stats screen                                  |
-| `b`                | Boards: open, create, rename, delete          |
+| `b`                | Boards: open, create, rename, describe (`e`), delete |
 | `z`                | Archived tasks: restore or delete             |
 | `Z`                | Archive every task in the last column         |
 | `C` / `E` / `D`    | Add / edit / delete the focused column        |
@@ -289,6 +289,7 @@ kancli export -f md               # or csv, json; -o file
 kancli export -o tasks.parquet    # via DuckDB; -events for the log
 kancli import tasks.csv           # or .md, .json
 kancli boards new Work            # boards use|rename|rm
+kancli boards describe work "Client projects"   # shown in the picker and boards list
 kancli columns
 kancli columns add Review --wip 2 # add a column at the right
 kancli columns edit review --name QA --color 99

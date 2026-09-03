@@ -520,19 +520,25 @@ func (c *cli) boardsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "boards",
 		Aliases: []string{"board"},
-		Short:   "List boards, or manage them with new, use, rename and rm",
+		Short:   "List boards, or manage them with new, use, rename, describe and rm",
 		GroupID: groupBoards,
 		Args:    cobra.NoArgs,
 		RunE:    c.wrap("boards", func(*cobra.Command, []string) error { return c.boardsList() }),
 	}
+	var newDesc string
+	boardsNew := &cobra.Command{
+		Use:     "new <name>",
+		Aliases: []string{"add"},
+		Short:   "Create a board and switch to it",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: c.wrap("boards new", func(_ *cobra.Command, args []string) error {
+			return c.boardsNew(strings.Join(args, " "), newDesc)
+		}),
+	}
+	boardsNew.Flags().StringVar(&newDesc, "desc", "", "description")
+
 	cmd.AddCommand(
-		&cobra.Command{
-			Use:     "new <name>",
-			Aliases: []string{"add"},
-			Short:   "Create a board and switch to it",
-			Args:    cobra.MinimumNArgs(1),
-			RunE:    c.wrap("boards new", func(_ *cobra.Command, args []string) error { return c.boardsNew(strings.Join(args, " ")) }),
-		},
+		boardsNew,
 		&cobra.Command{
 			Use:               "use <name>",
 			Aliases:           []string{"switch"},
@@ -547,6 +553,16 @@ func (c *cli) boardsCmd() *cobra.Command {
 			Args:              cobra.ExactArgs(2),
 			ValidArgsFunction: positional(c.completeBoards),
 			RunE:              c.wrap("boards rename", func(_ *cobra.Command, args []string) error { return c.boardsRename(args[0], args[1]) }),
+		},
+		&cobra.Command{
+			Use:               "describe <board> <text...>",
+			Short:             "Set a board's description (empty text clears it)",
+			Args:              cobra.MinimumNArgs(1),
+			ValidArgsFunction: positional(c.completeBoards),
+			Example:           "  kancli boards describe work \"Client projects and invoices\"\n  kancli boards describe work \"\"",
+			RunE: c.wrap("boards describe", func(_ *cobra.Command, args []string) error {
+				return c.boardsDescribe(args[0], strings.Join(args[1:], " "))
+			}),
 		},
 		&cobra.Command{
 			Use:               "rm <name>",
