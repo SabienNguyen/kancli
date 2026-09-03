@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strings"
@@ -649,6 +650,11 @@ func (b *Board) DeleteTask(id int) bool {
 	}
 	col := b.Tasks[i].Column
 	b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	if len(b.Tasks) == 0 {
+		// Keep an emptied board identical to a never-used one, so a
+		// replayed board matches a restored copy byte for byte.
+		b.Tasks = nil
+	}
 	b.touch()
 	b.dropLinksTo(id)
 	b.emit(Event{Kind: EvTaskDeleted, Task: id, From: col})
@@ -908,14 +914,89 @@ func (b *Board) MoveColumn(id string, delta int) bool {
 	return true
 }
 
-// Replace swaps in a whole board state (used by undo) and records it as a
-// single event so replay reproduces it.
+// Replace swaps in a whole board state (used by undo and redo) and records
+// the difference between the two states, so the log grows with the size of
+// the change rather than with the size of the board.
 func (b *Board) Replace(nb Board) {
+	events := b.diff(nb)
 	rec, clock, gen := b.rec, b.clock, b.gen
 	*b = nb
 	b.rec, b.clock = rec, clock
 	b.byID, b.gen = nil, gen+1
-	b.emit(Event{Kind: EvBoardRestored, Data: MustJSON(nb)})
+	for _, e := range events {
+		b.emit(e)
+	}
+}
+
+// diff returns the events that turn b into nb. It replays its own events
+// onto a scratch board as it goes, so what it emits is exactly what a
+// replay reproduces: task order and dropped links included.
+func (b *Board) diff(nb Board) []Event {
+	var events, reverts []Event
+	sim := &Board{Tasks: copyTasks(b.Tasks)}
+
+	wanted := make(map[int]bool, len(nb.Tasks))
+	for _, t := range nb.Tasks {
+		wanted[t.ID] = true
+	}
+	for _, t := range b.Tasks {
+		if wanted[t.ID] {
+			continue
+		}
+		events = append(events, Event{Kind: EvTaskDeleted, Task: t.ID, From: t.Column})
+		sim.DeleteTask(t.ID)
+	}
+
+	// The board settings come back before the tasks do: a snapshot taken
+	// part way through the events must never see a task in a column the
+	// board no longer has, or normalisation would move it.
+	if nb.Name != b.Name || nb.Description != b.Description || nb.NextID != b.NextID ||
+		!bytes.Equal(MustJSON(nb.Columns), MustJSON(b.Columns)) {
+		meta := nb
+		meta.Tasks = nil
+		events = append(events, Event{Kind: EvBoardReverted, Data: MustJSON(meta)})
+	}
+
+	for i, t := range nb.Tasks {
+		if i < len(sim.Tasks) && sim.Tasks[i].ID == t.ID &&
+			bytes.Equal(MustJSON(sim.Tasks[i]), MustJSON(t)) {
+			continue
+		}
+		reverts = append(reverts, Event{Kind: EvTaskReverted, Task: t.ID, To: t.Column,
+			Index: i, Data: MustJSON(t)})
+		sim.revertTask(t, i)
+	}
+	return append(events, reverts...)
+}
+
+// revertTask puts a task back where a task.reverted event says it belongs,
+// replacing any task with the same id.
+func (b *Board) revertTask(t Task, index int) {
+	if i := b.taskIndex(t.ID); i >= 0 {
+		b.Tasks = append(b.Tasks[:i], b.Tasks[i+1:]...)
+	}
+	if index < 0 || index > len(b.Tasks) {
+		index = len(b.Tasks)
+	}
+	b.Tasks = append(b.Tasks, Task{})
+	copy(b.Tasks[index+1:], b.Tasks[index:])
+	b.Tasks[index] = t
+	b.touch()
+}
+
+// copyTasks copies a task slice deeply enough that deleting a task from the
+// copy (which drops links pointing at it) cannot touch the original.
+func copyTasks(tasks []Task) []Task {
+	out := make([]Task, len(tasks))
+	copy(out, tasks)
+	for i := range out {
+		if out[i].Links != nil {
+			links := make([]Link, len(out[i].Links))
+			copy(links, out[i].Links)
+			out[i].Links = links
+		}
+	}
+	return out
 }
 
 // normalizeLabels trims, lowercases, de-duplicates and sorts labels.

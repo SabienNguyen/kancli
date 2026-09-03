@@ -41,6 +41,7 @@ const (
 	minWidth     = 60
 	minHeight    = 18
 	maxUndo      = 100
+	maxUndoBytes = 64 << 20 // cap on the undo stack, summed over its board copies
 	pollInterval = 2 * time.Second
 )
 
@@ -269,7 +270,21 @@ func (m *App) snapshot() {
 	if len(m.undoStack) > maxUndo {
 		m.undoStack = m.undoStack[1:]
 	}
+	m.trimUndo()
 	m.redoStack = nil
+}
+
+// trimUndo drops the oldest undo entries until the stack fits in
+// maxUndoBytes, so a big board cannot grow the history without bound.
+func (m *App) trimUndo() {
+	total := 0
+	for _, e := range m.undoStack {
+		total += len(e.board)
+	}
+	for total > maxUndoBytes && len(m.undoStack) > 1 {
+		total -= len(m.undoStack[0].board)
+		m.undoStack = m.undoStack[1:]
+	}
 }
 
 // dropSnapshot discards the most recent snapshot after a no-op.

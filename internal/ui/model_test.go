@@ -763,3 +763,28 @@ func TestDescribeBoardUndo(t *testing.T) {
 		t.Errorf("after redo = %q, want %q", m.board.Description, want)
 	}
 }
+
+// TestSnapshotCapsUndoStackBytes checks that the undo history is bounded by
+// bytes, not just by entry count: a board big enough that a handful of
+// copies blow past the cap loses its oldest entries.
+func TestSnapshotCapsUndoStackBytes(t *testing.T) {
+	m := &App{}
+	big := 40 << 20
+	m.undoStack = []undoEntry{{board: make([]byte, big)}, {board: make([]byte, big)}}
+	m.snapshot()
+
+	large := 0
+	total := 0
+	for _, e := range m.undoStack {
+		total += len(e.board)
+		if len(e.board) == big {
+			large++
+		}
+	}
+	if large != 1 {
+		t.Errorf("large entries kept = %d, want 1", large)
+	}
+	if total > maxUndoBytes {
+		t.Errorf("undo stack holds %d bytes, want at most %d", total, maxUndoBytes)
+	}
+}
