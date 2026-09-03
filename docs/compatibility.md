@@ -52,6 +52,26 @@ saved survives a power failure.
 - A config key that was renamed keeps working under its old name and
   prints a warning naming the new one.
 
+## Goal boards and cross-board links
+
+Additive only, so `board.FileVersion` and `board.EventVersion` are
+unchanged and every existing file loads as it did:
+
+- `Link.board` (json `board,omitempty`): the id of the other task's board.
+  Absent or empty means the link points at a task on the same board, which
+  is what every link written before this version is.
+- `Board.kind` (json `kind,omitempty`): `""` or `"tasks"` for a ticket
+  board, `"goals"` for a goal board. Absent means a ticket board.
+- The event kind `board.kind` (`Text` = the new kind) records the change.
+  The `link.added` / `link.removed` events carry the other task's board in
+  their otherwise unused `to` field.
+
+The caveat: an older kancli ignores both fields. It shows a cross-board link
+as dangling (`no task #12`, looked up on the wrong board) and drops
+`Link.board` the next time it writes that task, which silently turns the
+link into a same-board one. Do not edit a file with cross-board links using
+an older build.
+
 ## What a user gets on downgrade
 
 Running an older kancli on newer data fails before anything is written:

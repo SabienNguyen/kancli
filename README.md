@@ -28,6 +28,7 @@ file on your machine; there is no server or account.
 - [Install](#install)
 - [Upgrading](#upgrading)
 - [The board](#the-board)
+- [Goals](#goals)
 - [Stats and history](#stats-and-history)
 - [The CLI](#the-cli)
 - [How it works](#how-it-works)
@@ -50,6 +51,9 @@ file on your machine; there is no server or account.
   relates to. Blocked cards are marked, parents show subtask progress,
   `#12` in a description or comment links automatically, and finishing a
   task with open subtasks or blockers warns you.
+- **Goal boards**: mark a board as goals and link its cards to the tickets
+  that deliver them, on any board (`work#12`); each goal shows how many of
+  them are done.
 - **Similar-task detection** warns when you add something that looks like an
   existing task and lists look-alikes on the task page.
 - **Stats**: cycle time, time per column, weekly throughput, work in
@@ -148,7 +152,7 @@ Flags take one dash or two; `-as-of` and `--as-of` are the same thing.
 | `s`                | Cycle sort: manual, priority, due, created, updated, title |
 | `u` / `U`          | Undo / redo                                   |
 | `S`                | Stats screen                                  |
-| `b`                | Boards: open, create, rename, describe (`e`), delete |
+| `b`                | Boards: open, create, rename, describe (`e`), mark as goals (`k`), delete |
 | `z`                | Archived tasks: restore or delete             |
 | `Z`                | Archive every task in the last column         |
 | `C` / `E` / `D`    | Add / edit / delete the focused column        |
@@ -171,7 +175,8 @@ In the **task view**, `tab` steps through checklist items, attachments and
 links, `space` toggles a checklist item, `X` removes the item or link under
 the cursor, `t` adds a checklist item, `c` adds a comment, `A` attaches a
 link or path, `o` opens the attachment, `l` links another task, `g` jumps
-to the linked task under the cursor, `e` edits, `H`/`L` move the task, `a`
+to the linked task under the cursor (switching boards if it lives on
+another one), `e` edits, `H`/`L` move the task, `a`
 archives, `d` deletes and `esc` goes back. The page also lists similar
 tasks and the task's full activity.
 
@@ -184,6 +189,9 @@ Tasks can point at each other in three ways:
 | `blocks 15` / `blocked-by 15` | this task blocks #15 / is blocked by #15 |
 | `subtask-of 3` / `parent-of 7` | this task is a subtask of #3 / #7 is its subtask |
 | `relates 9` | related, no direction |
+
+The other task can live on another board: write it `work#12` (board id or
+name, case insensitive) instead of `12`. See [Goals](#goals).
 
 A task with an unfinished blocker shows a blocked marker on its card and in
 the header count; the blocker is finished once it reaches the last column
@@ -211,7 +219,7 @@ due:today    also tomorrow, overdue, week, none, or a date
 col:done     column name or id
 blocked:yes  tasks with an unfinished blocker (blocked:no for the rest)
 blocks:12    tasks that block #12; blockedby:12 for the reverse
-parent:3     subtasks of #3
+parent:3     subtasks of #3; parent:roadmap#3 for a task on another board
 has:subtasks also has:blockers, has:links, has:parent, has:due, has:checklist
 ```
 
@@ -222,6 +230,53 @@ Terms combine: `+bug due:week @sam` finds Sam's bugs due this week.
 Press `b` to switch boards, or pass `-board NAME`. Each board has its own
 columns and tasks. The last column of a board counts as "done" for the
 `done` command, the `Z` shortcut, the due-date badge and all the statistics.
+
+## Goals
+
+A goal board is an ordinary board marked as goals, and a goal is just a task
+on it. Columns, keys, sorting, search, stats and everything else work exactly
+as they do anywhere else; only the wording and one progress line differ.
+
+```sh
+kancli boards new Roadmap --goals   # or: kancli boards kind roadmap goals
+kancli boards kind roadmap tasks    # back to a normal board
+```
+
+In the app, press `b` for the board picker and `k` to toggle the board under
+the cursor between goals and tasks.
+
+A goal is connected to the work that delivers it with the usual links, from
+either end. A task on another board is written `work#12`: the board id or
+name (case insensitive), `#`, the number. Plain `#12` still means the current
+board.
+
+```sh
+kancli link 12 subtask-of roadmap#3      # ticket #12 on this board -> goal #3
+kancli link roadmap#3 parent-of work#12  # the same link, from the goal
+kancli unlink roadmap#3 work#12
+```
+
+`work#12` is accepted everywhere a task is referred to by number: the `l`
+link prompt in the task view, `kancli link` and `kancli unlink`, `#`
+mentions in descriptions and comments (which link automatically, as always),
+and the `blocks:`, `blockedby:` and `parent:` search filters.
+
+What you see:
+
+- A goal card shows `↳ 3/7` — its tickets, counted across every board, and
+  how many are finished (in the last column of their own board, or archived).
+  It stays visible on compact cards.
+- The header reads `Kancli · Roadmap · goals`, and the board picker and
+  `kancli boards` list mark the board `goals`.
+- The wording says goal instead of task: `n` is "new goal", and adding one
+  prints `Added goal #3 to To Do`.
+- Relations name a foreign task with its board: `blocked by work#12 Fix
+  login (In Progress)`. `g` on it switches to that board and opens the task.
+
+Blocked markers, the warning when you finish something with open subtasks,
+cycle refusal, and cleanup when a task or board is deleted all work across
+boards too. Undo stays per board; a cross-board link is stored on the task
+you made it from, so one undo removes it.
 
 ## Stats and history
 
@@ -278,6 +333,7 @@ kancli done 12 13                 # move to the last column
 kancli archive 12 && kancli restore 12
 kancli rm 12
 kancli link 12 blocked-by 15      # blocks, blocked-by, subtask-of, parent-of, relates
+kancli link 12 subtask-of roadmap#3   # the other task may be on another board
 kancli unlink 12 15
 kancli due                        # overdue and due-today tasks
 kancli due -days 7 -notify        # desktop notification when something is due
@@ -291,6 +347,7 @@ kancli export -o tasks.parquet    # via DuckDB; -events for the log
 kancli import tasks.csv           # or .md, .json
 kancli boards new Work            # boards use|rename|rm
 kancli boards describe work "Client projects"   # shown in the picker and boards list
+kancli boards new Roadmap --goals # a goal board; boards kind roadmap tasks undoes it
 kancli columns
 kancli columns add Review --wip 2 # add a column at the right
 kancli columns edit review --name QA --color 99
@@ -519,7 +576,7 @@ An event row looks like this (`kancli log -json`):
 Kinds: `task.created|updated|moved|reordered|deleted|archived|restored`,
 `comment.added`, `checklist.added|toggled|removed`,
 `attachment.added|removed`, `column.added|updated|removed|moved`,
-`board.added|renamed|described|removed|activated`,
+`board.added|renamed|described|removed|activated|kind`,
 `link.added|removed`, and `task.reverted` / `board.reverted` for undo.
 
 ## DuckDB

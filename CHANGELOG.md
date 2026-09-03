@@ -4,6 +4,12 @@
 
 ### Added
 
+- Goal boards: mark a board as goals (`kancli boards new Roadmap --goals`,
+  `boards kind`, or `k` in the board picker). Links can point at tasks on
+  other boards, written `work#12`, from the link prompt, `kancli link`, `#`
+  mentions and the `parent:`/`blocks:`/`blockedby:` filters; a goal's
+  progress counts its tickets across boards, and `g` jumps to a linked task
+  on another board.
 - Board descriptions: `e` in the board picker, `kancli boards describe`, and
   `--desc` on `kancli boards new`. Shown in the picker and in `kancli boards`.
 - Safer upgrades: the first run on data from an older kancli copies the old
