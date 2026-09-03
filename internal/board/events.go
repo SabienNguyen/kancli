@@ -103,6 +103,7 @@ func (f *File) Attach() {
 	}
 	for _, b := range f.Boards {
 		b.rec = f.rec
+		b.file = f
 		if b.clock == nil {
 			b.clock = Now
 		}
@@ -189,7 +190,7 @@ func (f *File) EmptyBase() *File {
 		nb := *b
 		nb.Tasks = nil
 		nb.NextID = 1
-		nb.rec, nb.clock, nb.byID = nil, nil, nil
+		nb.rec, nb.clock, nb.byID, nb.file = nil, nil, nil, nil
 		empty.Boards = append(empty.Boards, &nb)
 	}
 	empty.LastSeq, empty.SnapshotAt = 0, time.Time{}
@@ -227,6 +228,7 @@ func (f *File) Apply(e Event) error {
 		if f.Board(b.ID) == nil {
 			nb := &b
 			nb.rec = rec
+			nb.file = f
 			nb.clock = Now
 			if len(nb.Columns) == 0 {
 				nb.Columns = DefaultColumns()
@@ -323,9 +325,9 @@ func (f *File) Apply(e Event) error {
 	case EvColumnMoved:
 		b.MoveColumn(e.From, e.Index)
 	case EvLinkAdded:
-		return ignoreNotFound(b.AddLink(e.Task, LinkKind(e.Text), e.Index))
+		return ignoreNotFound(b.AddLinkTo(e.Task, LinkKind(e.Text), Ref{Board: e.To, ID: e.Index}))
 	case EvLinkRemoved:
-		b.RemoveLink(e.Task, LinkKind(e.Text), e.Index)
+		b.RemoveLinkTo(e.Task, LinkKind(e.Text), Ref{Board: e.To, ID: e.Index})
 	case EvTaskReverted:
 		var t Task
 		if err := json.Unmarshal(e.Data, &t); err != nil {
@@ -346,7 +348,7 @@ func (f *File) Apply(e Event) error {
 		if err := json.Unmarshal(e.Data, &nb); err != nil {
 			return err
 		}
-		nb.rec, nb.clock = b.rec, prevClock
+		nb.rec, nb.clock, nb.file = b.rec, prevClock, b.file
 		nb.gen = b.gen + 1
 		nb.byID = nil // a whole new task slice: rebuild on next lookup
 		*b = nb
@@ -458,9 +460,9 @@ func (e Event) Describe(f *File) string {
 	case EvBoardReverted:
 		return "reverted board settings"
 	case EvLinkAdded:
-		return fmt.Sprintf("linked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
+		return fmt.Sprintf("linked %s %s %s", ref, kindVerb(LinkKind(e.Text)), Ref{Board: e.To, ID: e.Index})
 	case EvLinkRemoved:
-		return fmt.Sprintf("unlinked %s %s #%d", ref, kindVerb(LinkKind(e.Text)), e.Index)
+		return fmt.Sprintf("unlinked %s %s %s", ref, kindVerb(LinkKind(e.Text)), Ref{Board: e.To, ID: e.Index})
 	}
 	return string(e.Kind)
 }

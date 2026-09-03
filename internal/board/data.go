@@ -34,6 +34,11 @@ type Board struct {
 
 	rec   *recorder
 	clock func() time.Time
+	// file is the board's file, so a link can be followed to another
+	// board. It is set by File.Attach and never serialised; a board built
+	// on its own (tests, the diff scratch board) has none and treats every
+	// foreign link as unresolvable.
+	file *File
 	// stamp is the clock reading of the mutation in progress, so the event
 	// it emits carries exactly the time written into the task.
 	stamp time.Time
@@ -273,7 +278,9 @@ func (f *File) Active() *Board {
 		return b
 	}
 	if len(f.Boards) == 0 {
-		f.Boards = append(f.Boards, NewBoard("Main"))
+		nb := NewBoard("Main")
+		nb.file = f // the back-reference File.Attach would set
+		f.Boards = append(f.Boards, nb)
 	}
 	f.ActiveBoard = f.Boards[0].ID
 	return f.Boards[0]
@@ -367,6 +374,9 @@ func (f *File) RemoveBoard(id string) error {
 			f.Boards = append(f.Boards[:i], f.Boards[i+1:]...)
 			if f.ActiveBoard == id {
 				f.ActiveBoard = f.Boards[0].ID
+			}
+			for _, ob := range f.Boards {
+				ob.dropLinksToBoard(id)
 			}
 			f.emit(Event{Kind: EvBoardRemoved, Board: id})
 			return nil
@@ -940,13 +950,35 @@ func (b *Board) MoveColumn(id string, delta int) bool {
 // the change rather than with the size of the board.
 func (b *Board) Replace(nb Board) {
 	events := b.diff(nb)
-	rec, clock, gen := b.rec, b.clock, b.gen
+	rec, clock, file, gen := b.rec, b.clock, b.file, b.gen
 	*b = nb
-	b.rec, b.clock = rec, clock
+	b.rec, b.clock, b.file = rec, clock, file
 	b.gen = gen + 1
 	b.invalidateIndex()
 	for _, e := range events {
 		b.emit(e)
+		// Replaying the deletion drops the task's links on every other
+		// board, so the live state has to lose them too.
+		if e.Kind == EvTaskDeleted {
+			b.dropForeignLinksTo(e.Task)
+		}
+	}
+}
+
+// dropForeignLinksTo strips links pointing at one of this board's tasks
+// from the other boards of the file, leaving this board's own links alone.
+func (b *Board) dropForeignLinksTo(id int) {
+	if b.file == nil {
+		return
+	}
+	target := Ref{Board: b.ID, ID: id}
+	for _, ob := range b.file.Boards {
+		if ob == b {
+			continue
+		}
+		if ob.dropLinks(func(l Link) bool { return ob.canon(ob.linkRef(l)) == target }) {
+			ob.touch()
+		}
 	}
 }
 
