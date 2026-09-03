@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func assertFits(t *testing.T, m App, label string) {
@@ -1013,5 +1014,48 @@ func TestForeignBlockerNamesItsBoard(t *testing.T) {
 	warn := m.doneWarning([]int{3}, m.board.DoneColumn())
 	if !strings.Contains(warn, "still blocked by roadmap#1") {
 		t.Errorf("finish warning = %q", warn)
+	}
+}
+
+// TestColumnFormBorderFollowsPickedColour: the column dialog previews the
+// colour being picked by drawing its own border in it, so ←/→ across the
+// palette recolours the frame straight away.
+func TestColumnFormBorderFollowsPickedColour(t *testing.T) {
+	// The tests run without a terminal, where lipgloss drops every colour;
+	// force a profile so the escape sequences reach the rendered view.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	fg := func(c string) string {
+		r := lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render("x")
+		return r[:strings.Index(r, "x")]
+	}
+	first, second := fg(board.ColumnPalette[0]), fg(board.ColumnPalette[1])
+
+	m, _ := newTestApp(t)
+	m = press(m, "C")
+	if m.state != stateColumnForm {
+		t.Fatalf("state = %v, want the column form", m.state)
+	}
+	// Move off the name field onto the palette, then pick the first colour.
+	m = press(m, "tab", "right")
+	if got := m.colForm.color(); got != board.ColumnPalette[0] {
+		t.Fatalf("colour = %q, want %q", got, board.ColumnPalette[0])
+	}
+	if v := m.View(); !strings.Contains(v, first) {
+		t.Errorf("view should draw the border in the first palette colour %q", board.ColumnPalette[0])
+	}
+
+	m = press(m, "right")
+	if got := m.colForm.color(); got != board.ColumnPalette[1] {
+		t.Fatalf("colour = %q, want %q", got, board.ColumnPalette[1])
+	}
+	v := m.View()
+	if !strings.Contains(v, second) {
+		t.Errorf("view should draw the border in the picked colour %q:\n%s", board.ColumnPalette[1], v)
+	}
+	if strings.Contains(v, first) {
+		t.Errorf("view still uses the previous colour %q:\n%s", board.ColumnPalette[0], v)
 	}
 }
