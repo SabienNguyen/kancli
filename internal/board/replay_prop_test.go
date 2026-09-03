@@ -107,7 +107,7 @@ var opNames = []string{
 	"comment", "check", "toggle", "uncheck", "attach", "detach",
 	"addcol", "updcol", "rmcol", "mvcol",
 	"link", "unlink", "xlink", "xunlink",
-	"board", "rename", "describe", "activate", "rmboard",
+	"board", "rename", "describe", "kind", "activate", "rmboard",
 	"snap", "undo",
 }
 
@@ -237,6 +237,8 @@ func (g *opGen) step() {
 		g.f.RenameBoard(g.board(), word.Draw(rt, "newName")) //nolint:errcheck
 	case "describe":
 		g.f.DescribeBoard(g.board(), word.Draw(rt, "desc")) //nolint:errcheck
+	case "kind":
+		g.f.SetBoardKind(g.board(), rapid.SampledFrom([]string{"", "tasks", "goals", "Goals", "epics"}).Draw(rt, "kind")) //nolint:errcheck // random input may be invalid
 	case "activate":
 		g.f.Activate(g.board()) //nolint:errcheck
 	case "rmboard":

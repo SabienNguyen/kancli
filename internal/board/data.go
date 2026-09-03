@@ -28,6 +28,7 @@ type Board struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
+	Kind        string   `json:"kind,omitempty"` // "" or "tasks" = ticket board; "goals" = goal board
 	Columns     []Column `json:"columns"`
 	Tasks       []Task   `json:"tasks"`
 	NextID      int      `json:"next_id"`
@@ -348,6 +349,45 @@ func (f *File) DescribeBoard(id, text string) error {
 	}
 	b.Description = text
 	f.emit(Event{Kind: EvBoardDescribed, Board: b.ID, Text: text})
+	return nil
+}
+
+// Board kinds. A ticket board stores no kind at all, so files written
+// before goal boards existed stay byte-for-byte what they were.
+const BoardKindTasks, BoardKindGoals = "tasks", "goals"
+
+// IsGoals reports whether the board holds goals rather than tickets.
+func (b *Board) IsGoals() bool { return b.Kind == BoardKindGoals }
+
+// Noun is what one card on this board is called, for status messages and
+// CLI output.
+func (b *Board) Noun() string {
+	if b.IsGoals() {
+		return "goal"
+	}
+	return "task"
+}
+
+// SetBoardKind marks a board as a goal board or a ticket board. It accepts
+// "", "tasks" and "goals" in any case; a ticket board stores "".
+func (f *File) SetBoardKind(id, kind string) error {
+	b := f.Board(id)
+	if b == nil {
+		return fmt.Errorf("no board %q", id)
+	}
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", BoardKindTasks:
+		kind = ""
+	case BoardKindGoals:
+		kind = BoardKindGoals
+	default:
+		return fmt.Errorf(`board kind must be "tasks" or "goals"`)
+	}
+	if kind == b.Kind {
+		return nil
+	}
+	b.Kind = kind
+	f.emit(Event{Kind: EvBoardKind, Board: b.ID, Text: kind})
 	return nil
 }
 
@@ -1004,7 +1044,7 @@ func (b *Board) diff(nb Board) []Event {
 	// The board settings come back before the tasks do: a snapshot taken
 	// part way through the events must never see a task in a column the
 	// board no longer has, or normalisation would move it.
-	if nb.Name != b.Name || nb.Description != b.Description || nb.NextID != b.NextID ||
+	if nb.Name != b.Name || nb.Description != b.Description || nb.Kind != b.Kind || nb.NextID != b.NextID ||
 		!bytes.Equal(MustJSON(nb.Columns), MustJSON(b.Columns)) {
 		meta := nb
 		meta.Tasks = nil

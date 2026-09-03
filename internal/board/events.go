@@ -32,6 +32,7 @@ const (
 	EvBoardAdded        EventKind = "board.added"
 	EvBoardRenamed      EventKind = "board.renamed"
 	EvBoardDescribed    EventKind = "board.described"
+	EvBoardKind         EventKind = "board.kind"
 	EvBoardRemoved      EventKind = "board.removed"
 	EvBoardActivated    EventKind = "board.activated"
 	EvBoardRestored     EventKind = "board.restored"
@@ -246,6 +247,11 @@ func (f *File) Apply(e Event) error {
 			b.Description = e.Text
 		}
 		return nil
+	case EvBoardKind:
+		if b := f.Board(e.Board); b != nil {
+			b.Kind = e.Text
+		}
+		return nil
 	case EvBoardRemoved:
 		return ignoreNotFound(f.RemoveBoard(e.Board))
 	case EvBoardActivated:
@@ -341,7 +347,8 @@ func (f *File) Apply(e Event) error {
 		}
 		// Board settings only: b.Tasks is untouched, so the id index stays
 		// valid.
-		b.Name, b.Description, b.Columns, b.NextID = nb.Name, nb.Description, nb.Columns, nb.NextID
+		b.Name, b.Description, b.Kind = nb.Name, nb.Description, nb.Kind
+		b.Columns, b.NextID = nb.Columns, nb.NextID
 		b.touch()
 	case EvBoardRestored:
 		var nb Board
@@ -449,6 +456,11 @@ func (e Event) Describe(f *File) string {
 			return "cleared the board description"
 		}
 		return fmt.Sprintf("described board: %q", e.Text)
+	case EvBoardKind:
+		if e.Text == BoardKindGoals {
+			return "made board a goal board"
+		}
+		return "made board a task board"
 	case EvBoardRemoved:
 		return "deleted board " + e.Board
 	case EvBoardActivated:
