@@ -1,14 +1,10 @@
 package store
 
 import (
-	"bufio"
-	"bytes"
-	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,78 +12,51 @@ import (
 	"time"
 
 	"github.com/SabienNguyen/kancli/internal/board"
-
-	"github.com/gofrs/flock"
 )
 
-// compactAfter is how many events may accumulate in the tail log before
-// the store folds them into a fresh snapshot.
+// CompactAfter is how many events may accumulate after the newest snapshot
+// before the store folds them into a fresh one.
 const CompactAfter = 500
 
-// errStale is returned by compact when another process changed the log or
-// snapshot since this store last read them. Callers reload and retry.
+// ErrStale is returned by Compact when another process wrote to the
+// database since this store last read it. Callers reload and retry.
 var ErrStale = errors.New("the board changed on disk; reload before writing a snapshot")
 
-// snapshotSeq reads only the last_seq of a snapshot file.
-func snapshotSeq(path string) (int64, time.Time) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, time.Time{}
-	}
-	var probe struct {
-		LastSeq int64 `json:"last_seq"`
-	}
-	_ = json.Unmarshal(data, &probe)
-	mod := time.Time{}
-	if info, err := os.Stat(path); err == nil {
-		mod = info.ModTime()
-	}
-	return probe.LastSeq, mod
-}
-
-// maxEventLine bounds one event line; undo events carry a whole board.
-const maxEventLine = 32 << 20
-
-// store persists the data as a snapshot plus an append-only event log:
+// Store persists the data in one SQLite database, board.db:
 //
-//	board.json            snapshot: full state as of LastSeq
-//	board.events.jsonl    tail: events appended since the snapshot
-//	board.events/         archived tail segments (immutable, for analytics)
-//	board.snapshots/      every snapshot ever written (for "as of" views)
-//	board.lock            cross-process lock
+//	events      the append-only log; the source of truth
+//	snapshots   folded state, pruned by the retention policy
+//	meta        the store format and creation time
 //
-// A store with an empty path keeps everything in memory only.
+// A store with an empty path keeps everything in a private in-memory
+// database, which is how demo mode discards its changes.
 type Store struct {
-	path       string
-	logPath    string
-	archiveDir string
-	snapDir    string
-	lockPath   string
-	backupDir  string
-	actor      string
+	path  string // the .db file, empty for demo mode
+	actor string
 
-	logSize    int64     // bytes of the tail log this process has consumed
-	tailCount  int       // events in the tail log
-	snapMod    time.Time // snapshot modification time at the last load/save
-	nextSeq    int64     // next event sequence number
-	needReload bool      // another process appended events since our load
+	db      *sql.DB
+	openErr error
 
-	mem []board.Event // event log for in-memory stores
+	nextSeq   int64 // next event sequence number to hand out
+	seen      int64 // highest sequence number this store has read or written
+	tailCount int   // events after the newest snapshot
+	dataVer   int64 // PRAGMA data_version at the last load or save
 
-	segments map[string]cachedSegment      // archived segments already parsed
-	walkers  map[string]*board.StatsWalker // incremental stats per board
+	needReload bool // another process wrote since our load
 
-	upgrade *Upgrade // set by Load when it opened older-format data
+	walkers map[string]*board.StatsWalker // incremental stats per board
+
+	upgrade *Upgrade // set when opening data an older kancli wrote
 }
 
-// Upgrade describes a data directory that an older kancli wrote and this
-// one has just opened.
+// Upgrade describes a data file that an older kancli wrote and this one has
+// just opened.
 type Upgrade struct {
 	From, To int
-	Backup   string // directory holding a copy of the old files
+	Backup   string // directory holding the old files
 }
 
-// Upgraded reports the upgrade Load performed, if any.
+// Upgraded reports the upgrade performed while opening, if any.
 func (s *Store) Upgraded() (Upgrade, bool) {
 	if s.upgrade == nil {
 		return Upgrade{}, false
@@ -95,44 +64,42 @@ func (s *Store) Upgraded() (Upgrade, bool) {
 	return *s.upgrade, true
 }
 
-// cachedSegment is a parsed archive file; archived segments never change,
-// so the size check only guards against a file being replaced.
-type cachedSegment struct {
-	size   int64
-	events []board.Event
-}
-
+// New returns a store for path. Nothing is opened until the first read or
+// write, because the CLI builds stores for completion and for demo mode. An
+// empty path is demo mode; a configured .json path (the file store's name)
+// maps to the board.db beside it.
 func New(path string) *Store {
-	s := &Store{path: path, actor: "ui"}
-	if path != "" {
-		base := strings.TrimSuffix(path, filepath.Ext(path))
-		s.logPath = base + ".events.jsonl"
-		s.archiveDir = base + ".events"
-		s.snapDir = base + ".snapshots"
-		s.lockPath = base + ".lock"
-		s.backupDir = base + ".backups"
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		path = strings.TrimSuffix(path, filepath.Ext(path)) + ".db"
 	}
-	return s
+	return &Store{path: path, actor: "ui"}
 }
 
-// enabled reports whether the store writes to disk.
-// Path is the snapshot file; LogPath, ArchiveDir and SnapDir are its
-// siblings. They are empty for in-memory stores.
-func (s *Store) Path() string       { return s.path }
-func (s *Store) LogPath() string    { return s.logPath }
-func (s *Store) ArchiveDir() string { return s.archiveDir }
-func (s *Store) SnapDir() string    { return s.snapDir }
+// Path is the database file. It is empty for in-memory stores.
+func (s *Store) Path() string { return s.path }
+
+// LogPath, ArchiveDir and SnapDir named the file store's siblings. They are
+// stubs so the CLI and the UI still compile; the callers, and these
+// methods, go away with the DuckDB rework (Task 4).
+func (s *Store) LogPath() string { return "" }
+
+// ArchiveDir is a stub; see LogPath.
+func (s *Store) ArchiveDir() string { return "" }
+
+// SnapDir is a stub; see LogPath.
+func (s *Store) SnapDir() string { return "" }
 
 // SetActor names the process in the events this store writes.
 func (s *Store) SetActor(actor string) { s.actor = actor }
 
-// NeedReload reports that another process wrote to the log or snapshot
-// since this store last read them; callers should Load again.
+// NeedReload reports that another process wrote to the database since this
+// store last read it; callers should Load again.
 func (s *Store) NeedReload() bool { return s.needReload }
 
+// Enabled reports whether the store writes to disk.
 func (s *Store) Enabled() bool { return s != nil && s.path != "" }
 
-// describe is shown in the header.
+// Describe is shown in the header.
 func (s *Store) Describe() string {
 	if !s.Enabled() {
 		return "demo mode · changes are not saved"
@@ -145,8 +112,8 @@ func (s *Store) Describe() string {
 	return s.path
 }
 
-// defaultStorePath returns the data file location: $KANCLI_FILE if set,
-// otherwise kancli/board.json under $XDG_DATA_HOME or the OS config dir.
+// DefaultPath returns the data file location: $KANCLI_FILE if set,
+// otherwise kancli/board.db under $XDG_DATA_HOME or the OS config dir.
 func DefaultPath() (string, error) {
 	if p := os.Getenv("KANCLI_FILE"); p != "" {
 		return p, nil
@@ -159,72 +126,69 @@ func DefaultPath() (string, error) {
 		}
 		base = dir
 	}
-	return filepath.Join(base, "kancli", "board.json"), nil
+	return filepath.Join(base, "kancli", "board.db"), nil
 }
 
-// lock takes the cross-process lock, waiting a little for a busy peer.
-func (s *Store) lock() (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(s.lockPath), 0o755); err != nil {
-		return nil, err
+// Close releases the database. It is safe to call more than once.
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
 	}
-	fl := flock.New(s.lockPath)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ok, err := fl.TryLockContext(ctx, 50*time.Millisecond)
-	if err != nil {
-		return nil, fmt.Errorf("lock %s: %w", s.lockPath, err)
-	}
-	if !ok {
-		return nil, fmt.Errorf("another kancli is holding %s", s.lockPath)
-	}
-	return func() { fl.Unlock() }, nil //nolint:errcheck // best effort
+	db := s.db
+	s.db, s.openErr = nil, nil
+	return db.Close()
 }
 
 // --- loading ----------------------------------------------------------------
 
-// load reads the snapshot, replays the tail log and returns the live state.
+// Load reads the newest snapshot, replays the events after it and returns
+// the live state.
 func (s *Store) Load() (*board.File, error) {
-	if !s.Enabled() {
-		f := board.NewFile()
-		f.SetActor(s.actor)
-		return f, nil
-	}
-	f, fresh, version, err := s.readSnapshot(s.path)
+	f, snapSeq, found, err := s.readSnapshot(time.Time{})
 	if err != nil {
 		return nil, err
 	}
-	if version < board.FileVersion && exists(s.path) {
-		if err := s.backupOld(version); err != nil {
-			return nil, err
-		}
+	if !found {
+		f = board.NewFile()
 	}
 	f.SetActor(s.actor)
 
-	events, size, err := readEventFile(s.logPath)
+	events, err := s.readEvents(snapSeq, time.Time{})
 	if err != nil {
 		return nil, err
 	}
 	if err := f.Replay(events); err != nil {
-		return nil, replayError(s.logPath, err)
+		return nil, replayError(s.describePath(), err)
 	}
-	s.logSize = size
+	maxSeq, err := s.maxEventSeq()
+	if err != nil {
+		return nil, err
+	}
+	s.seen = max64(max64(f.LastSeq, snapSeq), maxSeq)
+	s.nextSeq = s.seen + 1
 	s.tailCount = len(events)
-	s.nextSeq = f.LastSeq + 1
-	for _, e := range events {
-		if e.Seq >= s.nextSeq {
-			s.nextSeq = e.Seq + 1
-		}
-	}
 	s.needReload = false
+	if s.dataVer, err = s.dataVersion(); err != nil {
+		return nil, err
+	}
 
-	// A board that predates the event log gets a history seeded from its
-	// task timestamps so "as of" views and stats have something to work on.
-	if fresh && len(events) == 0 && !exists(s.snapDir) && hasTasks(f) {
+	// A board that predates the event log (one the importer just brought
+	// over) gets a history seeded from its task timestamps so "as of" views
+	// and stats have something to work on.
+	if found && len(events) == 0 && f.LastSeq == 0 && f.SnapshotAt.IsZero() && hasTasks(f) {
 		if err := s.bootstrap(f); err != nil {
 			return nil, err
 		}
 	}
 	return f, nil
+}
+
+// describePath names the database in error messages.
+func (s *Store) describePath() string {
+	if s.path == "" {
+		return "the in-memory board"
+	}
+	return s.path
 }
 
 func hasTasks(f *board.File) bool {
@@ -236,67 +200,33 @@ func hasTasks(f *board.File) bool {
 	return false
 }
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
-// readSnapshot decodes a snapshot file. fresh reports that it existed but
-// carries no event sequence yet (a pre-event-log board).
-func (s *Store) readSnapshot(path string) (f *board.File, fresh bool, version int, err error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		s.snapMod = time.Time{}
-		return board.NewFile(), false, board.FileVersion, nil
-	}
-	if err != nil {
-		return nil, false, 0, fmt.Errorf("read %s: %w", path, err)
-	}
-	if info, err := os.Stat(path); err == nil && path == s.path {
-		s.snapMod = info.ModTime()
-	}
-	f, version, err = board.DecodeVersion(data)
-	if err != nil {
-		return nil, false, version, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return f, f.LastSeq == 0 && f.SnapshotAt.IsZero(), version, nil
-}
-
-// backupOld copies the snapshot and the live log as they were before this
-// kancli touches them, once per source version. Nothing is overwritten:
-// a directory that already exists is left alone.
-func (s *Store) backupOld(from int) error {
-	dir := filepath.Join(s.backupDir, fmt.Sprintf("v%d", from))
-	s.upgrade = &Upgrade{From: from, To: board.FileVersion, Backup: dir}
-	if exists(dir) {
-		return nil
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create backup %s: %w", dir, err)
-	}
-	for _, src := range []string{s.path, s.logPath} {
-		data, err := os.ReadFile(src)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("back up %s: %w", src, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, filepath.Base(src)), data, 0o644); err != nil {
-			return fmt.Errorf("back up %s: %w", src, err)
-		}
-	}
-	return nil
-}
-
-// bootstrap seeds the log for a board that predates it: an empty initial
-// snapshot, one created event per task at its creation time, and moves or
-// archives at the task's last update. It then compacts so the live
-// snapshot carries the real state.
+// bootstrap seeds the log for a board that predates it: an empty base
+// snapshot at sequence zero, one created event per task at its creation
+// time, and moves or archives at the task's last update. It then compacts
+// so the newest snapshot carries the real state.
 func (s *Store) bootstrap(f *board.File) error {
-	if err := s.writeSnapshotCopy(f.EmptyBase(), 0); err != nil {
+	db, err := s.conn()
+	if err != nil {
 		return err
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := insertSnapshot(tx, f.EmptyBase(), 0); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
 	var events []board.Event
 	for _, b := range f.Boards {
 		first := ""
@@ -322,50 +252,35 @@ func (s *Store) bootstrap(f *board.File) error {
 		}
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].At.Before(events[j].At) })
-	if err := s.append(events); err != nil {
+	if err := s.append(f, events); err != nil {
 		return err
 	}
 	return s.Compact(f)
 }
 
-// loadAsOf reconstructs the state at a point in time from the newest
-// snapshot before it plus the events up to it.
+// LoadAsOf reconstructs the state at a point in time from the newest
+// snapshot before it plus the events up to it. The result is frozen.
 func (s *Store) LoadAsOf(t time.Time) (*board.File, error) {
-	if !s.Enabled() {
-		f := board.NewFile()
-		return f, nil
+	base, snapSeq, found, err := s.readSnapshot(t)
+	if err != nil {
+		return nil, err
 	}
-	snapshots, _ := filepath.Glob(filepath.Join(s.snapDir, "*.json"))
-	sort.Strings(snapshots)
-	var base *board.File
-	for i := len(snapshots) - 1; i >= 0; i-- {
-		f, _, _, err := s.readSnapshot(snapshots[i])
+	if !found {
+		seqs, err := s.snapshotSeqs()
 		if err != nil {
-			continue
+			return nil, err
 		}
-		if f.SnapshotAt.IsZero() || !f.SnapshotAt.After(t) {
-			base = f
-			break
-		}
-	}
-	if base == nil {
-		if len(snapshots) == 0 {
+		if len(seqs) == 0 {
 			return nil, fmt.Errorf("no history: the board has not been saved since the event log was introduced")
 		}
 		return nil, fmt.Errorf("no snapshot from before %s", t.Format(board.DateLayout))
 	}
-	events, err := s.Events()
+	events, err := s.readEvents(snapSeq, t)
 	if err != nil {
 		return nil, err
 	}
-	var upTo []board.Event
-	for _, e := range events {
-		if !e.At.After(t) {
-			upTo = append(upTo, e)
-		}
-	}
-	if err := base.Replay(upTo); err != nil {
-		return nil, replayError(s.logPath, err)
+	if err := base.Replay(events); err != nil {
+		return nil, replayError(s.describePath(), err)
 	}
 	base.Freeze()
 	return base, nil
@@ -388,415 +303,212 @@ func replayError(path string, err error) error {
 
 // --- events ------------------------------------------------------------------
 
-// readEventFile parses a JSONL file. A torn last line (from a crash mid
-// write) is dropped; any other damage is an error. Line lengths are counted
-// in real bytes, so a log with CRLF endings is measured accurately and the
-// caller never truncates at the wrong offset.
-func readEventFile(path string) ([]board.Event, int64, error) {
-	fh, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, 0, nil
-	}
-	if err != nil {
-		return nil, 0, err
-	}
-	defer fh.Close()
-	rd := bufio.NewReaderSize(fh, 64<<10)
-	var events []board.Event
-	var consumed int64
-	for {
-		raw, err := readEventLine(rd)
-		if errors.Is(err, errEventLineTooLong) {
-			return nil, 0, fmt.Errorf("%s: bad event line after seq %d: %w", path, lastSeq(events), err)
-		}
-		if err != nil && !errors.Is(err, io.EOF) {
-			return nil, 0, err
-		}
-		atEOF := errors.Is(err, io.EOF)
-		if len(raw) == 0 {
-			break // nothing left to read
-		}
-		// The terminator counts towards the line, but not towards the JSON.
-		line := bytes.TrimSpace(raw)
-		if len(line) == 0 {
-			consumed += int64(len(raw)) // a blank line is skipped but counted
-			if atEOF {
-				break
-			}
-			continue
-		}
-		var e board.Event
-		if jerr := json.Unmarshal(line, &e); jerr != nil {
-			if atEOF || isLastLine(rd) {
-				// A torn tail: leave it unconsumed so the caller truncates.
-				break
-			}
-			return nil, 0, fmt.Errorf("%s: bad event line after seq %d: %w", path, lastSeq(events), jerr)
-		}
-		events = append(events, e)
-		consumed += int64(len(raw))
-		if atEOF {
-			break
-		}
-	}
-	return events, consumed, nil
-}
-
-// isLastLine reports whether the reader is exhausted, so the line just read
-// was the file's last one.
-func isLastLine(rd *bufio.Reader) bool {
-	_, err := rd.Peek(1)
-	return errors.Is(err, io.EOF)
-}
-
-// errEventLineTooLong reports a line past maxEventLine, which means the log
-// is damaged rather than merely large.
-var errEventLineTooLong = fmt.Errorf("event line exceeds %d bytes", maxEventLine)
-
-// readEventLine returns one line including its terminator, or io.EOF along
-// with the final unterminated line. The returned slice is only valid until
-// the next read.
-func readEventLine(rd *bufio.Reader) ([]byte, error) {
-	var buf []byte
-	for {
-		frag, err := rd.ReadSlice('\n')
-		if len(buf) == 0 && !errors.Is(err, bufio.ErrBufferFull) {
-			if len(frag) > maxEventLine {
-				return frag, errEventLineTooLong
-			}
-			return frag, err
-		}
-		buf = append(buf, frag...)
-		if len(buf) > maxEventLine {
-			return buf, errEventLineTooLong
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return buf, err
-	}
-}
-
-func lastSeq(events []board.Event) int64 {
-	if len(events) == 0 {
-		return 0
-	}
-	return events[len(events)-1].Seq
-}
-
-// events returns the complete history: archived segments then the tail.
+// Events returns the complete history in sequence order.
 func (s *Store) Events() ([]board.Event, error) {
-	if !s.Enabled() {
-		return append([]board.Event(nil), s.mem...), nil
-	}
-	segments, _ := filepath.Glob(filepath.Join(s.archiveDir, "*.jsonl"))
-	sort.Strings(segments)
-	if s.segments == nil {
-		s.segments = map[string]cachedSegment{}
-	}
-	var all []board.Event
-	for _, seg := range segments {
-		info, err := os.Stat(seg)
-		if err != nil {
-			return nil, err
-		}
-		cached, ok := s.segments[seg]
-		if !ok || cached.size != info.Size() {
-			evs, _, err := readEventFile(seg)
-			if err != nil {
-				return nil, err
-			}
-			cached = cachedSegment{size: info.Size(), events: evs}
-			s.segments[seg] = cached
-		}
-		all = append(all, cached.events...)
-	}
-	tail, _, err := readEventFile(s.logPath)
-	if err != nil {
-		return nil, err
-	}
-	all = append(all, tail...)
-	ordered := true
-	for i := 1; i < len(all); i++ {
-		if all[i].Seq < all[i-1].Seq {
-			ordered = false
-			break
-		}
-	}
-	if !ordered {
-		sort.SliceStable(all, func(i, j int) bool { return all[i].Seq < all[j].Seq })
-	}
-	return all, nil
+	return s.readEvents(0, time.Time{})
 }
 
-// boardStats returns statistics for a board, folding only the events that
-// arrived since the last call into a cached walker.
-func (s *Store) BoardStats(b *board.Board, now time.Time, days int) (board.Stats, error) {
+// ExportEventsJSONL writes every event to path, one JSON object per line,
+// in sequence order. The DuckDB bridge reads it.
+func (s *Store) ExportEventsJSONL(path string) error {
+	fh, err := os.Create(path)
+	if err != nil {
+		return err
+	}
 	events, err := s.Events()
 	if err != nil {
-		return board.Stats{}, err
+		fh.Close()
+		return err
 	}
+	enc := json.NewEncoder(fh)
+	for _, e := range events {
+		if err := enc.Encode(e); err != nil {
+			fh.Close()
+			return err
+		}
+	}
+	return fh.Close()
+}
+
+// BoardStats returns statistics for a board, folding only the events that
+// arrived since the last call into a cached walker.
+func (s *Store) BoardStats(b *board.Board, now time.Time, days int) (board.Stats, error) {
 	if s.walkers == nil {
 		s.walkers = map[string]*board.StatsWalker{}
 	}
 	w := s.walkers[b.ID]
-	if w == nil || !w.Compatible(b) || (len(events) > 0 && events[len(events)-1].Seq < w.Seq()) {
+	if w == nil || !w.Compatible(b) {
 		w = board.NewStatsWalker(b)
 		s.walkers[b.ID] = w
+	}
+	events, err := s.readEvents(w.Seq(), time.Time{})
+	if err != nil {
+		return board.Stats{}, err
 	}
 	w.Feed(events)
 	return w.Finish(b, now, days), nil
 }
 
-// append writes events to the tail log under the lock and numbers them.
-func (s *Store) append(events []board.Event) error {
+// TailEvents reports how many events are waiting to be compacted.
+func (s *Store) TailEvents() int { return s.tailCount }
+
+// append writes the events in one immediate transaction. When another
+// process has written since our last read, its events are replayed into f
+// first so nothing is lost and the sequence numbers stay consecutive.
+func (s *Store) append(f *board.File, events []board.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
-	if !s.Enabled() {
-		for i := range events {
-			s.nextSeq++
-			events[i].Seq = s.nextSeq
-			s.mem = append(s.mem, events[i])
-		}
-		return nil
-	}
-	unlock, err := s.lock()
+	db, err := s.conn()
 	if err != nil {
 		return err
 	}
-	defer unlock()
-
-	// Another process may have appended, or compacted the log away, since
-	// we last read it. Re-derive the next sequence number from whatever is
-	// on disk so ours can never collide with or fall behind a snapshot.
-	if info, err := os.Stat(s.logPath); err == nil {
-		if info.Size() != s.logSize {
-			s.needReload = true
-			all, consumed, err := readEventFile(s.logPath)
-			if err != nil {
-				return err
-			}
-			if last := lastSeq(all); last >= s.nextSeq {
-				s.nextSeq = last + 1
-			}
-			// A torn last line (from a crash) is garbage; cut it off so the
-			// next event starts on a clean line.
-			if consumed < info.Size() {
-				if err := os.Truncate(s.logPath, consumed); err != nil {
-					return fmt.Errorf("repair %s: %w", s.logPath, err)
-				}
-			}
-			s.logSize = consumed
-			s.tailCount = len(all)
-		}
-	} else if s.logSize != 0 {
-		// The tail we knew about was compacted by someone else.
-		s.needReload = true
-		s.logSize, s.tailCount = 0, 0
-	}
-	if seq, mod := snapshotSeq(s.path); !mod.IsZero() && !mod.Equal(s.snapMod) {
-		s.needReload = true
-		if seq >= s.nextSeq {
-			s.nextSeq = seq + 1
-		}
-	}
-
-	fh, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("open %s: %w", s.logPath, err)
+		return err
 	}
-	w := bufio.NewWriter(fh)
-	var written int64
-	for i := range events {
-		events[i].Seq = s.nextSeq
-		s.nextSeq++
-		if events[i].V == 0 {
-			events[i].V = board.EventVersion
-		}
-		line, err := json.Marshal(events[i])
+	if err := s.mergeAndInsert(tx, f, events); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.tailCount, err = s.countTail(); err != nil {
+		return err
+	}
+	s.dataVer, err = s.dataVersion()
+	return err
+}
+
+func (s *Store) mergeAndInsert(tx *sql.Tx, f *board.File, events []board.Event) error {
+	var ver int64
+	if err := tx.QueryRow(`PRAGMA data_version`).Scan(&ver); err != nil {
+		return err
+	}
+	if ver != s.dataVer {
+		s.needReload = true
+		rows, err := tx.Query(`SELECT `+eventColumns+` FROM events WHERE seq > ? ORDER BY seq`, s.seen)
 		if err != nil {
-			fh.Close()
 			return err
 		}
-		n, err := w.Write(append(line, '\n'))
+		foreign, err := scanEvents(rows)
 		if err != nil {
-			fh.Close()
-			return fmt.Errorf("append %s: %w", s.logPath, err)
+			return err
 		}
-		written += int64(n)
+		if err := f.Replay(foreign); err != nil {
+			return replayError(s.describePath(), err)
+		}
+		f.Pending() // replay is silent, but never leak events back into the log
+		if last := lastSeq(foreign); last >= s.nextSeq {
+			s.nextSeq = last + 1
+			s.seen = last
+		}
 	}
-	if err := w.Flush(); err != nil {
-		fh.Close()
+	next, err := insertEvents(tx, events, s.nextSeq)
+	if err != nil {
 		return err
 	}
-	if err := fh.Sync(); err != nil {
-		fh.Close()
-		return err
-	}
-	if err := fh.Close(); err != nil {
-		return err
-	}
-	s.logSize += written
-	s.tailCount += len(events)
+	s.nextSeq = next
+	s.seen = next - 1
 	return nil
 }
 
-// save appends the file's pending events and compacts when the tail has
+// Save appends the file's pending events and compacts when the tail has
 // grown large. It never rewrites state another process may have changed.
 func (s *Store) Save(f *board.File) error {
-	if err := s.append(f.Pending()); err != nil {
+	if err := s.append(f, f.Pending()); err != nil {
 		return err
 	}
-	if !s.Enabled() {
-		return nil
+	if s.needReload {
+		return nil // the caller reloads; compaction would drop foreign events
+	}
+	seqs, err := s.snapshotSeqs()
+	if err != nil {
+		return err
 	}
 	// The first save writes the base snapshot the log replays onto; later
 	// saves compact once the tail has grown.
-	if !exists(s.path) || (s.tailCount >= CompactAfter && !s.needReload) {
+	if len(seqs) == 0 || s.tailCount >= CompactAfter {
 		return s.Compact(f)
 	}
 	return nil
 }
 
-// compact writes a fresh snapshot and moves the tail log into the archive.
+// Compact folds the events into a fresh snapshot and prunes the snapshot
+// history. It refuses (ErrStale) when another process has written since
+// this store last read, because folding would drop those events.
 func (s *Store) Compact(f *board.File) error {
-	if !s.Enabled() {
-		return nil
-	}
-	if err := s.append(f.Pending()); err != nil {
+	if err := s.append(f, f.Pending()); err != nil {
 		return err
 	}
-	unlock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	// Never fold events this process has not replayed: if the log or the
-	// snapshot moved under us, the caller must reload first.
 	if s.needReload {
 		return ErrStale
 	}
-	if info, err := os.Stat(s.logPath); err == nil {
-		if info.Size() != s.logSize {
-			s.needReload = true
-			return ErrStale
-		}
-	} else if s.logSize != 0 {
-		s.needReload = true
-		return ErrStale
+	db, err := s.conn()
+	if err != nil {
+		return err
 	}
-	if _, mod := snapshotSeq(s.path); !mod.IsZero() && !s.snapMod.IsZero() && !mod.Equal(s.snapMod) {
-		s.needReload = true
-		return ErrStale
+	tx, err := db.Begin()
+	if err != nil {
+		return err
 	}
+	if err := s.writeSnapshot(tx, f); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.tailCount = 0
+	s.dataVer, err = s.dataVersion()
+	return err
+}
 
+func (s *Store) writeSnapshot(tx *sql.Tx, f *board.File) error {
+	var ver int64
+	if err := tx.QueryRow(`PRAGMA data_version`).Scan(&ver); err != nil {
+		return err
+	}
+	if ver != s.dataVer {
+		s.needReload = true
+		return ErrStale
+	}
+	rows, err := snapshotRowsTx(tx)
+	if err != nil {
+		return err
+	}
 	// The very first snapshot is preceded by an empty base so that "as of"
 	// views can replay the whole history from the beginning.
-	if snaps, _ := filepath.Glob(filepath.Join(s.snapDir, "*.json")); len(snaps) == 0 {
-		if err := s.writeSnapshotCopy(f.EmptyBase(), 0); err != nil {
+	if len(rows) == 0 {
+		if err := insertSnapshot(tx, f.EmptyBase(), 0); err != nil {
 			return err
 		}
+		rows = append(rows, snapshotRow{seq: 0})
 	}
 	f.LastSeq = s.nextSeq - 1
 	f.SnapshotAt = board.Now()
-	if err := writeAtomic(s.path, f); err != nil {
+	if err := insertSnapshot(tx, f, f.LastSeq); err != nil {
 		return err
 	}
-	if info, err := os.Stat(s.path); err == nil {
-		s.snapMod = info.ModTime()
-	}
-	if err := s.writeSnapshotCopy(f, f.LastSeq); err != nil {
-		return err
-	}
-	if s.tailCount > 0 || exists(s.logPath) {
-		tail, _, err := readEventFile(s.logPath)
-		if err != nil {
-			return err
-		}
-		if len(tail) > 0 {
-			if err := os.MkdirAll(s.archiveDir, 0o755); err != nil {
-				return err
-			}
-			name := fmt.Sprintf("%012d-%012d.jsonl", tail[0].Seq, tail[len(tail)-1].Seq)
-			if err := os.Rename(s.logPath, filepath.Join(s.archiveDir, name)); err != nil {
-				return fmt.Errorf("archive %s: %w", s.logPath, err)
-			}
-		} else {
-			os.Remove(s.logPath)
-		}
-	}
-	s.logSize = 0
-	s.tailCount = 0
-	return nil
+	rows = append(rows, snapshotRow{seq: f.LastSeq, at: f.SnapshotAt})
+	return prune(tx, rows, board.Now())
 }
 
-// tailEvents reports how many events are waiting to be compacted.
-func (s *Store) TailEvents() int { return s.tailCount }
-
-func (s *Store) writeSnapshotCopy(f *board.File, seq int64) error {
-	if err := os.MkdirAll(s.snapDir, 0o755); err != nil {
-		return err
-	}
-	return writeAtomic(filepath.Join(s.snapDir, fmt.Sprintf("%012d.json", seq)), f)
-}
-
-// writeAtomic marshals v to path via a temp file and rename.
-func writeAtomic(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode: %w", err)
-	}
-	data = append(data, '\n')
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".kancli-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write %s: %w", tmpName, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
-}
-
-// changedOnDisk reports whether another process has written the log or
-// snapshot since this store last read them.
+// ChangedOnDisk reports whether another process has written to the
+// database since this store last read it.
 func (s *Store) ChangedOnDisk() bool {
-	if !s.Enabled() {
-		return false
-	}
 	if s.needReload {
 		return true
 	}
-	if info, err := os.Stat(s.logPath); err == nil {
-		if info.Size() != s.logSize {
-			return true
-		}
-	} else if s.logSize != 0 {
+	if s.db == nil {
+		return false // nothing has been read yet, so nothing can be stale
+	}
+	ver, err := s.dataVersion()
+	if err != nil {
+		return false
+	}
+	if ver != s.dataVer {
+		s.needReload = true
 		return true
 	}
-	if info, err := os.Stat(s.path); err == nil {
-		return !info.ModTime().Equal(s.snapMod)
-	}
-	return !s.snapMod.IsZero()
+	return false
 }

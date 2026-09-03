@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -41,17 +40,10 @@ func SQLLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// eventFiles lists every event log file, oldest segment first.
-func (s *Store) EventFiles() []string {
-	if !s.Enabled() {
-		return nil
-	}
-	segs, _ := filepath.Glob(filepath.Join(s.archiveDir, "*.jsonl"))
-	if exists(s.logPath) {
-		segs = append(segs, s.logPath)
-	}
-	return segs
-}
+// EventFiles listed the file store's log files. It is a stub so the CLI
+// still compiles; it and its callers go away with the DuckDB rework
+// (Task 4), which exports the events from the database instead.
+func (s *Store) EventFiles() []string { return nil }
 
 // sqlViews returns SQL that defines the boards, columns, tasks, events and
 // derived views over the given state file and event log files. doneColumns
