@@ -165,6 +165,16 @@ func NewStyles(th Theme, ascii bool) Styles {
 	return s
 }
 
+// dialogBorder returns the dialog style with its border drawn in c, so a
+// form can preview the colour being picked. The accent border is kept for
+// the mono theme and when no colour has been chosen.
+func (s Styles) dialogBorder(c string) lipgloss.Style {
+	if s.th.mono || c == "" {
+		return s.dialog
+	}
+	return s.dialog.BorderForeground(lipgloss.Color(c))
+}
+
 // glyphs are the symbols used on cards, with ASCII fallbacks.
 type Glyphs struct {
 	mark, unmarked, checked, unchecked, urgent, high, medium, low, ellipsis, dot, blocked, subtask string

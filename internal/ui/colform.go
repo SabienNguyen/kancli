@@ -211,5 +211,5 @@ func (f columnForm) View() string {
 		"",
 		footer,
 	)
-	return f.st.dialog.Render(body)
+	return f.st.dialogBorder(f.color()).Render(body)
 }
